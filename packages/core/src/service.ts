@@ -170,6 +170,14 @@ function normalizeDisplayName(displayName: string): string {
   return value;
 }
 
+function remoteMatchesRepository(remote: string, repository: string): boolean {
+  const value = remote.trim().toLowerCase().replace(/\.git$/, "");
+  const expected = repository.toLowerCase();
+  return value === `https://github.com/${expected}`
+    || value === `git@github.com:${expected}`
+    || value === `ssh://git@github.com/${expected}`;
+}
+
 export function toWorkerName(repository: string): string {
   const value = repository.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
   const trimmed = value.slice(0, 63).replace(/-+$/g, "");
@@ -439,6 +447,7 @@ export class SiteToolkitService {
       });
       githubAuth = await this.runner.run("gh", ["auth", "status"], { cwd: workspace });
     }
+    await this.runner.run("gh", ["auth", "setup-git"], { cwd: workspace });
     if (!(await this.githubRepositoryAccess(workspace)).canCreate) {
       throw new SiteError(
         "AUTH_GITHUB_SCOPE_INSUFFICIENT",
@@ -731,8 +740,8 @@ export class SiteToolkitService {
     await this.assertSiteAccount(root);
     const before = await this.cloudflareStatus(root);
     const args = "versionId" in target
-      ? ["rollback", target.versionId, "--message", `site rollback to ${target.versionId}`]
-      : ["rollback", "--message", "site rollback to previous version"];
+      ? ["rollback", target.versionId, "--message", `site rollback to ${target.versionId}`, "--yes"]
+      : ["rollback", "--message", "site rollback to previous version", "--yes"];
     try {
       await this.runWrangler(args, root);
     } catch (error) {
@@ -765,6 +774,7 @@ export class SiteToolkitService {
         cwd: workspace,
         allowFailure: true,
       });
+      let linkedExistingSite = false;
       if (remote.exitCode === 0) {
         if (!(await exists(join(target, ".git")))) {
           throw new SiteError("RESOURCE_CONFLICT", "GitHub repository already exists but no matching local Git repository exists", {
@@ -776,13 +786,24 @@ export class SiteToolkitService {
           cwd: target,
           allowFailure: true,
         });
-        const expected = `github.com/${fullRepository}`.toLowerCase();
-        if (origin.exitCode !== 0 || !origin.stdout.trim().toLowerCase().includes(expected)) {
+        if (origin.exitCode !== 0 || !remoteMatchesRepository(origin.stdout, fullRepository)) {
           throw new SiteError("RESOURCE_CONFLICT", "GitHub repository already exists but is not linked to this site", {
             repository: fullRepository,
             target,
           });
         }
+        linkedExistingSite = true;
+      }
+      const worker = await this.runWrangler(
+        ["versions", "list", "--name", siteId, "--json"],
+        this.toolkitRoot,
+        { allowFailure: true },
+      );
+      if (worker.exitCode === 0 && !linkedExistingSite) {
+        throw new SiteError("RESOURCE_CONFLICT", "Cloudflare Worker name is already in use", {
+          worker: siteId,
+          repository: fullRepository,
+        });
       }
     }
 

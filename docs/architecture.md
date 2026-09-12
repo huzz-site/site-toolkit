@@ -289,7 +289,7 @@ site create huzz.cn \
 
 1. 运行 `site doctor`。
 2. 校验本地目录、仓库名、Worker 名和域名。
-3. 检查本地目录和 GitHub 仓库冲突；Cloudflare 路由冲突由 dry-run/部署返回。
+3. 检查本地目录、GitHub 仓库和 Worker 名冲突；Cloudflare 域名路由冲突由部署返回。
 4. 渲染固定版本的 Vue 模板。
 5. 生成 `site.config.json`、`wrangler.jsonc` 和最小工作流。
 6. 安装依赖并执行 `site check`。
@@ -359,7 +359,8 @@ jobs:
     uses: huzz-site/site-toolkit/.github/workflows/deploy.yml@v1
     with:
       cloudflare-account-id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-    secrets: inherit
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 ```
 
 ### 8.6 `site rollback`

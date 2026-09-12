@@ -189,5 +189,6 @@ describe("SiteToolkitService failure boundaries", () => {
     await expect(
       new SiteToolkitService({ cwd: root, toolkitRoot: root, runner }).rollback({ previous: true }),
     ).rejects.toMatchObject<Partial<SiteError>>({ code: "ROLLBACK_FAILED" });
+    expect(runner.calls.some(({ args }) => args.includes("rollback") && args.includes("--yes"))).toBe(true);
   });
 });
