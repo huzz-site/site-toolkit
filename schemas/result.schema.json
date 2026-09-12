@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/huzz-site/site-toolkit/v1/schemas/result.schema.json",
+  "title": "Site Toolkit command result",
+  "type": "object",
+  "required": ["schemaVersion", "ok", "command"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "ok": { "type": "boolean" },
+    "command": { "type": "string", "minLength": 1 },
+    "site": { "type": "string" },
+    "result": {},
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "error": {
+      "type": "object",
+      "required": ["code", "message", "exitCode", "details"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "exitCode": { "type": "integer" },
+        "details": { "type": "object" }
+      }
+    }
+  }
+}

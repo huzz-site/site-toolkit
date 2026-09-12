@@ -1,0 +1,57 @@
+name: Reusable Cloudflare Deploy
+
+on:
+  workflow_call:
+    inputs:
+      cloudflare-account-id:
+        description: Cloudflare Account ID stored as a repository variable
+        required: true
+        type: string
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare-account-id }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - name: Check out site
+        uses: actions/checkout@v7
+        with:
+          path: site
+
+      - name: Check out Site Toolkit
+        uses: actions/checkout@v7
+        with:
+          repository: huzz-site/site-toolkit
+          ref: v1
+          path: toolkit
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Set up pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.19.0 --activate
+
+      - name: Install Site Toolkit
+        working-directory: toolkit
+        run: pnpm install --frozen-lockfile
+
+      - name: Install site
+        working-directory: site
+        run: pnpm install --frozen-lockfile
+
+      - name: Deploy and verify
+        working-directory: toolkit
+        run: pnpm exec tsx packages/cli/src/index.ts --cwd "$GITHUB_WORKSPACE/site" --non-interactive --json deploy

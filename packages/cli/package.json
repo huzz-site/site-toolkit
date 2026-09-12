@@ -1,0 +1,24 @@
+{
+  "name": "@huzz-site/site-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "site": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b && chmod +x dist/index.js",
+    "clean": "tsc -b --clean",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@huzz-site/site-core": "workspace:*",
+    "commander": "15.0.0"
+  }
+}
