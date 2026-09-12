@@ -12,7 +12,7 @@ Translate the user's explicit intent into one deterministic `site` CLI invocatio
 Run `site` with both `--non-interactive` and `--json`. If the binary is not installed, run the repository entrypoint from the `site-toolkit` checkout:
 
 ```bash
-pnpm --dir <site-toolkit> site -- --cwd <workspace-or-site> --non-interactive --json <command> [arguments]
+pnpm --dir <site-toolkit> exec tsx packages/cli/src/index.ts --cwd <workspace-or-site> --non-interactive --json <command> [arguments]
 ```
 
 Parse stdout as the versioned result object. Treat stderr as human-readable progress only.
@@ -20,7 +20,7 @@ Parse stdout as the versioned result object. Treat stderr as human-readable prog
 ## Map intent to commands
 
 - Inspect readiness: `doctor`
-- Create and deploy a repository: `create <repository> --display-name <name> --domain <domain> [--alias <domain>] [--no-backend] --visibility <private|public>`
+- Create and deploy a repository: `create <repository> --display-name <name> --domain <domain> [--alias <domain>] <--with-backend|--no-backend> --visibility <private|public>`
 - Validate without upload: `check` or `deploy --dry-run`
 - Deploy the current committed site: `deploy`
 - Inspect the current deployment: `status`

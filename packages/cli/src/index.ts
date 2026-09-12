@@ -72,7 +72,17 @@ program
       workspace: resolve(options.workspace ?? globals.cwd),
       nonInteractive: globals.nonInteractive,
       ...(options.accountId === undefined ? {} : { accountId: options.accountId }),
-      ...(globals.nonInteractive ? {} : { chooseAccount, readApiToken: () => readSecret("Cloudflare API Token: ") }),
+      ...(globals.nonInteractive
+        ? {}
+        : {
+            chooseAccount,
+            readApiToken: async () => {
+              process.stderr.write(
+                "[site] Create an 'Edit Cloudflare Workers' token at https://dash.cloudflare.com/profile/api-tokens\n",
+              );
+              return readSecret("Cloudflare API Token: ");
+            },
+          }),
     });
     printResult("init", result);
   });

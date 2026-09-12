@@ -183,6 +183,8 @@ huzz.cn/
 
 Account ID 不是密钥，可以进入站点配置。Token 不得写入上述文件。
 
+自定义域名必须属于所选 Account 中的 active Cloudflare Zone。CLI 不替用户修改域名注册商 Nameserver；域名尚未接入 Cloudflare 时，先完成 Zone 激活再创建站点。
+
 ## 7. CLI 技术方案
 
 ```text

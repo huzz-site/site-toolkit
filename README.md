@@ -15,7 +15,7 @@ pnpm site --help
 初始化本地工作区：
 
 ```bash
-pnpm site -- --cwd .. init
+pnpm exec tsx packages/cli/src/index.ts --cwd .. init
 ```
 
 ## 安全边界
