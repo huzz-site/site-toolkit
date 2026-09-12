@@ -91,6 +91,37 @@ describe("SiteToolkitService failure boundaries", () => {
     );
   });
 
+  it("rejects an inaccessible explicit Cloudflare Account without OAuth fallback", async () => {
+    const root = await target();
+    const runner = new FakeRunner((command, args, options) => {
+      if (command === "pnpm" && args.includes("whoami")) {
+        return result(
+          command,
+          args,
+          options.cwd,
+          '{"loggedIn":true,"accounts":[{"id":"visible-account","name":"Visible"}]}',
+        );
+      }
+      if (command === "gh" && args[0] === "api" && args[1] === "orgs/huzz-site") {
+        return result(command, args, options.cwd, '{"members_can_create_repositories":true}');
+      }
+      if (command === "gh" && args[0] === "api" && args[1] === "user/memberships/orgs/huzz-site") {
+        return result(command, args, options.cwd, '{"role":"member","state":"active"}');
+      }
+      return result(command, args, options.cwd, "ok");
+    });
+
+    await expect(
+      new SiteToolkitService({ cwd: root, toolkitRoot: root, runner }).init({
+        workspace: root,
+        nonInteractive: true,
+        accountId: "missing-account",
+        apiToken: "test-token",
+      }),
+    ).rejects.toMatchObject<Partial<SiteError>>({ code: "CF_ACCOUNT_NOT_FOUND" });
+    expect(runner.calls.some(({ args }) => args.includes("login"))).toBe(false);
+  });
+
   it("rejects a conflicting target directory before creating anything", async () => {
     const workspace = await target();
     await writeWorkspaceConfig(workspace, {

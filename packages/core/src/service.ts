@@ -106,6 +106,17 @@ interface WorkflowRun {
   readonly headSha?: string;
 }
 
+interface GitHubOrganizationPolicy {
+  readonly members_can_create_repositories?: boolean;
+  readonly members_can_create_public_repositories?: boolean;
+  readonly members_can_create_private_repositories?: boolean;
+}
+
+interface GitHubMembership {
+  readonly role?: string;
+  readonly state?: string;
+}
+
 export interface ServiceOptions {
   readonly cwd?: string;
   readonly toolkitRoot: string;
@@ -147,6 +158,14 @@ function normalizeDomain(domain: string): string {
     !value.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))
   ) {
     throw new SiteError("VALIDATION_ERROR", "Invalid domain name", { domain });
+  }
+  return value;
+}
+
+function normalizeDisplayName(displayName: string): string {
+  const value = displayName.trim();
+  if (value.length === 0 || value.length > 120) {
+    throw new SiteError("VALIDATION_ERROR", "Display name must contain 1 to 120 characters");
   }
   return value;
 }
@@ -255,6 +274,28 @@ export class SiteToolkitService {
     return parseJsonOutput<CloudflareWhoami>(result, "wrangler whoami");
   }
 
+  private async githubRepositoryAccess(cwd: string): Promise<{ organizationAccessible: boolean; canCreate: boolean }> {
+    const [organizationResult, membershipResult] = await Promise.all([
+      this.runner.run("gh", ["api", `orgs/${GITHUB_ORGANIZATION}`], { cwd, allowFailure: true }),
+      this.runner.run("gh", ["api", `user/memberships/orgs/${GITHUB_ORGANIZATION}`], {
+        cwd,
+        allowFailure: true,
+      }),
+    ]);
+    const organizationAccessible = organizationResult.exitCode === 0;
+    if (!organizationAccessible || membershipResult.exitCode !== 0) {
+      return { organizationAccessible, canCreate: false };
+    }
+    const organization = parseJsonOutput<GitHubOrganizationPolicy>(organizationResult, "GitHub organization");
+    const membership = parseJsonOutput<GitHubMembership>(membershipResult, "GitHub organization membership");
+    if (membership.state !== "active") return { organizationAccessible, canCreate: false };
+    if (membership.role === "admin") return { organizationAccessible, canCreate: true };
+    const canCreate = organization.members_can_create_repositories === true
+      || organization.members_can_create_public_repositories === true
+      || organization.members_can_create_private_repositories === true;
+    return { organizationAccessible, canCreate };
+  }
+
   async doctor(start = this.cwd): Promise<DoctorResult> {
     const checks: DoctorCheck[] = [];
     const dependencies: ReadonlyArray<readonly [string, string, readonly string[]]> = [
@@ -304,15 +345,18 @@ export class SiteToolkitService {
     });
 
     if (githubAuth.exitCode === 0) {
-      const organization = await this.runner.run("gh", ["api", `orgs/${GITHUB_ORGANIZATION}`], {
-        cwd: this.toolkitRoot,
-        allowFailure: true,
-      });
+      const access = await this.githubRepositoryAccess(this.toolkitRoot);
       checks.push({
         name: "github:organization",
-        ok: organization.exitCode === 0,
-        ...(organization.exitCode === 0 ? {} : { code: "AUTH_GITHUB_SCOPE_INSUFFICIENT" }),
-        detail: organization.exitCode === 0 ? GITHUB_ORGANIZATION : "organization is not accessible",
+        ok: access.organizationAccessible,
+        ...(access.organizationAccessible ? {} : { code: "AUTH_GITHUB_SCOPE_INSUFFICIENT" }),
+        detail: access.organizationAccessible ? GITHUB_ORGANIZATION : "organization is not accessible",
+      });
+      checks.push({
+        name: "github:repository-create",
+        ok: access.canCreate,
+        ...(access.canCreate ? {} : { code: "AUTH_GITHUB_SCOPE_INSUFFICIENT" }),
+        detail: access.canCreate ? "allowed" : "repository creation is not allowed",
       });
     }
 
@@ -395,7 +439,12 @@ export class SiteToolkitService {
       });
       githubAuth = await this.runner.run("gh", ["auth", "status"], { cwd: workspace });
     }
-    await this.runner.run("gh", ["api", `orgs/${GITHUB_ORGANIZATION}`], { cwd: workspace });
+    if (!(await this.githubRepositoryAccess(workspace)).canCreate) {
+      throw new SiteError(
+        "AUTH_GITHUB_SCOPE_INSUFFICIENT",
+        `Current GitHub identity cannot create repositories in ${GITHUB_ORGANIZATION}`,
+      );
+    }
 
     let existing: WorkspaceConfig | undefined;
     if (await exists(join(workspace, WORKSPACE_CONFIG_FILE))) {
@@ -432,7 +481,12 @@ export class SiteToolkitService {
         ? accounts[0]
         : undefined
       : accounts.find((candidate) => candidate.id === options.accountId);
-    if (!account && accounts.length > 1 && options.chooseAccount) {
+    if (options.accountId !== undefined && !account) {
+      throw new SiteError("CF_ACCOUNT_NOT_FOUND", "Requested Cloudflare Account is not accessible", {
+        accountId: options.accountId,
+      });
+    }
+    if (!account && options.chooseAccount) {
       account = await options.chooseAccount(accounts);
     }
     if (!account) {
@@ -691,6 +745,7 @@ export class SiteToolkitService {
 
   async create(options: CreateOptions): Promise<Record<string, unknown>> {
     const repository = normalizeRepositoryName(options.repository);
+    const displayName = normalizeDisplayName(options.displayName);
     const domain = normalizeDomain(options.domain);
     const aliases = [...new Set(options.aliases.map(normalizeDomain))].filter((alias) => alias !== domain);
     const workspace = await findWorkspaceRoot(this.cwd);
@@ -748,7 +803,7 @@ export class SiteToolkitService {
         targetDirectory: target,
         repository,
         siteId,
-        displayName: options.displayName,
+        displayName,
         accountId: workspaceConfig.cloudflare.accountId,
         domain,
         aliases,
@@ -768,7 +823,7 @@ export class SiteToolkitService {
       allowFailure: true,
     });
     if (staged.exitCode === 1) {
-      await this.runner.run("git", ["commit", "-m", `chore: initialize ${options.displayName}`], { cwd: target });
+      await this.runner.run("git", ["commit", "-m", `chore: initialize ${displayName}`], { cwd: target });
     }
 
     if (options.skipRemote) {

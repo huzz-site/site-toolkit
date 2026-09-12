@@ -17,6 +17,15 @@ export interface RenderVueTemplateOptions {
   readonly compatibilityDate?: string;
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 async function copyTemplateDirectory(
   source: string,
   target: string,
@@ -128,7 +137,7 @@ export async function renderVueTemplate(options: RenderVueTemplateOptions): Prom
   const templateRoot = fileURLToPath(new URL("../vue", import.meta.url));
   await mkdir(options.targetDirectory, { recursive: true });
   await copyTemplateDirectory(templateRoot, options.targetDirectory, {
-    __DISPLAY_NAME__: options.displayName,
+    __DISPLAY_NAME__: escapeHtml(options.displayName),
     __SITE_ID__: options.siteId,
     __BACKEND_ENABLED__: String(options.withBackend),
   });

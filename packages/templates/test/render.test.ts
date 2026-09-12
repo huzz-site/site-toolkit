@@ -69,4 +69,26 @@ describe("renderVueTemplate", () => {
     const wrangler = JSON.parse(await readFile(join(directory, "wrangler.jsonc"), "utf8")) as Record<string, unknown>;
     expect(wrangler).not.toHaveProperty("main");
   });
+
+  it("escapes display names in markup without changing configuration data", async () => {
+    const directory = await target();
+    const displayName = '<Arc & "Boat">';
+    await renderVueTemplate({
+      targetDirectory: directory,
+      repository: "safe.example",
+      siteId: "safe-example",
+      displayName,
+      accountId: "account-123",
+      domain: "safe.example",
+      aliases: [],
+      withBackend: false,
+    });
+
+    const html = await readFile(join(directory, "index.html"), "utf8");
+    const vue = await readFile(join(directory, "src/App.vue"), "utf8");
+    const site = JSON.parse(await readFile(join(directory, "site.config.json"), "utf8")) as { displayName: string };
+    expect(html).toContain("&lt;Arc &amp; &quot;Boat&quot;&gt;");
+    expect(vue).toContain("&lt;Arc &amp; &quot;Boat&quot;&gt;");
+    expect(site.displayName).toBe(displayName);
+  });
 });
