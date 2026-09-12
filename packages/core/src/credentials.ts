@@ -29,7 +29,7 @@ export async function saveCloudflareToken(
       credentialAccount(accountId),
       "-w",
     ],
-    { cwd, input: `${token}\n` },
+    { cwd, input: `${token}\n${token}\n` },
   );
 }
 

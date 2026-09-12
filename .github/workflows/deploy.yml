@@ -54,4 +54,4 @@ jobs:
 
       - name: Deploy and verify
         working-directory: toolkit
-        run: pnpm exec tsx packages/cli/src/index.ts --cwd "$GITHUB_WORKSPACE/site" --non-interactive --json deploy
+        run: pnpm exec tsx --conditions=development packages/cli/src/index.ts --cwd "$GITHUB_WORKSPACE/site" --non-interactive --json deploy

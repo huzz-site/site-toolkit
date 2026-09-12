@@ -23,9 +23,9 @@ GitHub Organization：[`huzz-site`](https://github.com/huzz-site)
 
 ### G1：一次初始化
 
-`site init` 完成工作站检查、GitHub 登录、Cloudflare 登录、默认 Account 选择，并把 CI 使用的 Cloudflare API Token 保存到 macOS Keychain。初始化必须可重复执行。
+`site init` 完成工作站检查、GitHub 登录、Cloudflare API Token 验证、默认 Account 选择，并把 Token 保存到 macOS Keychain。初始化必须可重复执行。
 
-浏览器授权和 Token 创建仍需要用户本人确认；确认完成后 CLI 自动验证并继续。
+GitHub 浏览器授权和 Cloudflare Token 创建仍需要用户本人确认；确认完成后 CLI 自动验证并继续。首版不再维护一套额外的 Wrangler OAuth 凭证。
 
 ### G2：一条命令创建网站
 
@@ -235,13 +235,13 @@ site rollback                 回退到指定或上一个 Worker Version
 2. 验证当前目录是预期的 `huzz-site` 工作区。
 3. 运行 `gh auth status`；未登录时发起浏览器登录。
 4. 验证当前身份可以访问并创建 `huzz-site` 组织仓库。
-5. 运行 `wrangler whoami`；未登录时发起 Cloudflare OAuth。
-6. 读取可访问 Accounts；只有一个时自动选择，多个时由用户选择一次。
+5. 隐藏读取 Cloudflare 的 `Edit Cloudflare Workers` API Token，并用 `wrangler whoami --json` 验证。
+6. 从 Token 可访问的 Accounts 中选择默认 Account；只有一个时自动选择，多个时由用户选择一次。
 7. 保存非敏感的默认 Account ID 和名称。
 8. 验证 CI Token，并保存到本机 macOS Keychain；不写明文配置文件。
 9. 验证完整配置并输出结果。
 
-本地 OAuth 凭证由 Wrangler 管理。CI Token 通过隐藏输入读取，只写入 macOS Keychain，不进入项目文件、不打印。创建仓库时再从 Keychain 读取，并写入该仓库自己的 GitHub Actions Secret。
+同一个受限 API Token 同时服务本地 Wrangler 和 CI。Token 通过隐藏输入读取，只写入 macOS Keychain，不进入项目文件、不打印。创建仓库时再从 Keychain 读取，并写入该仓库自己的 GitHub Actions Secret。
 
 不使用 Organization Secret：`huzz-site` 当前是 GitHub Free，组织级 Secret/Variable 无法被私有仓库使用。仓库级 Secret 可同时支持公开和私有站点，也不需要 `admin:org` 权限。
 
@@ -257,7 +257,7 @@ site init --non-interactive --json
 检查：
 
 - 固定 GitHub Organization 是否可访问。
-- GitHub 与 Cloudflare 登录是否有效。
+- GitHub 登录和 Cloudflare API Token 是否有效。
 - 默认 Cloudflare Account 是否可访问。
 - 本机 Keychain 中的 CI Token 是否存在。
 - Node.js、pnpm、Wrangler 和 CLI 版本是否兼容。
