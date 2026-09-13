@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { loadSiteConfig, loadWranglerConfig, writeWorkspaceConfig } from "../src/config.js";
+import { loadSiteConfig, loadWranglerConfig } from "../src/config.js";
 import { SiteError } from "../src/errors.js";
 
 const directories: string[] = [];
@@ -20,17 +20,6 @@ afterEach(async () => {
 });
 
 describe("configuration", () => {
-  it("writes workspace configuration atomically", async () => {
-    const directory = await target();
-    await writeWorkspaceConfig(directory, {
-      schemaVersion: 1,
-      organization: "huzz-site",
-      cloudflare: { accountId: "account-123", accountName: "Default" },
-    });
-    const raw = JSON.parse(await (await import("node:fs/promises")).readFile(join(directory, ".site-workspace.json"), "utf8"));
-    expect(raw.cloudflare.accountId).toBe("account-123");
-  });
-
   it("rejects invalid site configuration", async () => {
     const directory = await target();
     await writeFile(join(directory, "site.config.json"), '{"version":1,"id":"INVALID"}');

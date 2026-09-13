@@ -2,11 +2,6 @@ name: Reusable Cloudflare Deploy
 
 on:
   workflow_call:
-    inputs:
-      cloudflare-account-id:
-        description: Cloudflare Account ID stored as a repository variable
-        required: true
-        type: string
     secrets:
       CLOUDFLARE_API_TOKEN:
         required: true
@@ -19,7 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare-account-id }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
       - name: Check out site
@@ -31,7 +25,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: huzz-site/site-toolkit
-          ref: v1
+          ref: v1.1.0
           path: toolkit
 
       - name: Set up Node.js

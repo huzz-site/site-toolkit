@@ -48,7 +48,7 @@ describe("renderVueTemplate", () => {
       { pattern: "www.huzz.cn", custom_domain: true },
     ]);
     expect(workflow).toContain("huzz-site/site-toolkit/.github/workflows/deploy.yml@v1");
-    expect(workflow).toContain("cloudflare-account-id");
+    expect(workflow).not.toContain("CLOUDFLARE_ACCOUNT_ID");
     expect(worker).toContain("satisfies ExportedHandler<Env>");
   });
 

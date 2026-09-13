@@ -1,4 +1,3 @@
-import { mkdir } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 
 import { renderVueTemplate } from "@huzz-site/site-templates";
@@ -7,21 +6,23 @@ import {
   GITHUB_ORGANIZATION,
   MINIMUM_NODE_MAJOR,
   MINIMUM_WRANGLER_MAJOR,
-  SCHEMA_VERSION,
   SITE_CONFIG_FILE,
-  WORKSPACE_CONFIG_FILE,
+  WRANGLER_CONFIG_FILE,
 } from "./constants.js";
 import {
   loadSiteConfig,
-  loadWorkspaceConfig,
   loadWranglerConfig,
   type SiteConfig,
   type WranglerConfig,
-  writeWorkspaceConfig,
-  type WorkspaceConfig,
 } from "./config.js";
+import {
+  CREDENTIAL_SERVICE,
+  SystemCredentialStore,
+  type CredentialStore,
+} from "./credential-store.js";
 import { readCloudflareToken } from "./credentials.js";
 import { SiteError } from "./errors.js";
+import { cloudflareCredentialGuidance, type CredentialGuidance } from "./guidance.js";
 import {
   ProcessRunner,
   commandAvailable,
@@ -29,7 +30,7 @@ import {
   type CommandResult,
   type CommandRunner,
 } from "./runner.js";
-import { directoryIsEmpty, exists, findSiteRoot, findWorkspaceRoot } from "./workspace.js";
+import { directoryIsEmpty, exists, findSiteRoot } from "./workspace.js";
 
 export interface Account {
   readonly id: string;
@@ -46,21 +47,22 @@ export interface DoctorCheck {
 export interface DoctorResult {
   readonly ready: boolean;
   readonly checks: readonly DoctorCheck[];
-  readonly workspace?: string;
+  readonly workspace: string;
   readonly account?: Account;
+  readonly accounts: readonly Account[];
+  readonly credentialGuidance?: CredentialGuidance;
+  readonly credentialSource?: "environment" | "system-credential-store";
 }
 
-export interface InitOptions {
-  readonly workspace: string;
-  readonly nonInteractive: boolean;
+export interface DoctorOptions {
+  readonly start?: string;
   readonly accountId?: string;
-  readonly apiToken?: string;
-  readonly chooseAccount?: (accounts: readonly Account[]) => Promise<Account>;
 }
 
 export interface CreateOptions {
   readonly repository: string;
   readonly displayName: string;
+  readonly accountId: string;
   readonly domain?: string;
   readonly aliases: readonly string[];
   readonly withBackend: boolean;
@@ -123,7 +125,13 @@ export interface ServiceOptions {
   readonly toolkitRoot: string;
   readonly runner?: CommandRunner;
   readonly fetcher?: typeof globalThis.fetch;
+  readonly credentialStore?: CredentialStore;
   readonly log?: (message: string) => void;
+}
+
+interface ResolvedCredential {
+  readonly token: string;
+  readonly source: "environment" | "system-credential-store";
 }
 
 function elapsed(start: number): number {
@@ -172,6 +180,16 @@ function normalizeDisplayName(displayName: string): string {
   return value;
 }
 
+export function normalizeAccountId(accountId: string): string {
+  const value = accountId.trim().toLowerCase();
+  if (!/^[a-f0-9]{32}$/.test(value)) {
+    throw new SiteError("VALIDATION_ERROR", "Cloudflare Account ID must be 32 hexadecimal characters", {
+      accountId,
+    });
+  }
+  return value;
+}
+
 function remoteMatchesRepository(remote: string, repository: string): boolean {
   const value = remote.trim().toLowerCase().replace(/\.git$/, "");
   const expected = repository.toLowerCase();
@@ -194,24 +212,32 @@ export class SiteToolkitService {
   readonly toolkitRoot: string;
   readonly runner: CommandRunner;
   readonly fetcher: typeof globalThis.fetch;
+  readonly credentialStore: CredentialStore;
   readonly log: (message: string) => void;
+  private readonly credentialCache = new Map<string, string>();
 
   constructor(options: ServiceOptions) {
     this.cwd = resolve(options.cwd ?? process.cwd());
     this.toolkitRoot = resolve(options.toolkitRoot);
     this.runner = options.runner ?? new ProcessRunner();
     this.fetcher = options.fetcher ?? globalThis.fetch;
+    this.credentialStore = options.credentialStore ?? new SystemCredentialStore();
     this.log = options.log ?? (() => undefined);
   }
 
   private async runWrangler(
     args: readonly string[],
     cwd: string,
-    options: { readonly interactive?: boolean; readonly input?: string; readonly env?: Readonly<Record<string, string>>; readonly allowFailure?: boolean } = {},
+    options: { readonly interactive?: boolean; readonly input?: string; readonly env?: Readonly<Record<string, string | undefined>>; readonly allowFailure?: boolean; readonly accountId?: string } = {},
   ): Promise<CommandResult> {
-    const storedEnvironment = args.includes("--version")
-      ? undefined
-      : await this.resolveCloudflareEnvironment();
+    let accountId = options.accountId;
+    if (accountId === undefined && !args.includes("--version") && await exists(join(cwd, WRANGLER_CONFIG_FILE))) {
+      accountId = (await loadWranglerConfig(cwd)).account_id;
+    }
+    const explicitToken = options.env?.CLOUDFLARE_API_TOKEN;
+    const storedEnvironment = args.includes("--version") || explicitToken !== undefined
+      ? { CLOUDFLARE_ACCOUNT_ID: undefined }
+      : await this.resolveCloudflareEnvironment(accountId);
     const environment = { ...storedEnvironment, ...options.env };
     return this.runner.run("pnpm", ["exec", "wrangler", ...args], {
       cwd,
@@ -222,15 +248,38 @@ export class SiteToolkitService {
     });
   }
 
-  private async resolveCloudflareEnvironment(): Promise<Readonly<Record<string, string>> | undefined> {
-    const directToken = readCloudflareToken();
-    const directAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
-    return directToken
-      ? {
-          CLOUDFLARE_API_TOKEN: directToken,
-          ...(directAccount === undefined ? {} : { CLOUDFLARE_ACCOUNT_ID: directAccount }),
+  private async resolveCloudflareCredential(accountId?: string): Promise<ResolvedCredential | undefined> {
+    const environmentToken = readCloudflareToken();
+    const runningInCi = process.env.CI === "true" || process.env.GITHUB_ACTIONS === "true";
+    if (environmentToken !== undefined && runningInCi) {
+      return { token: environmentToken, source: "environment" };
+    }
+    let storeError: unknown;
+    if (accountId !== undefined) {
+      const cached = this.credentialCache.get(accountId);
+      if (cached !== undefined) return { token: cached, source: "system-credential-store" };
+      try {
+        const stored = await this.credentialStore.get(accountId);
+        if (stored !== undefined) {
+          this.credentialCache.set(accountId, stored);
+          return { token: stored, source: "system-credential-store" };
         }
-      : undefined;
+      } catch (error) {
+        storeError = error;
+      }
+    }
+    if (environmentToken !== undefined) return { token: environmentToken, source: "environment" };
+    if (storeError !== undefined) throw storeError;
+    return undefined;
+  }
+
+  private async resolveCloudflareEnvironment(accountId?: string): Promise<Readonly<Record<string, string | undefined>>> {
+    const credential = await this.resolveCloudflareCredential(accountId);
+    return {
+      ...(credential === undefined ? {} : { CLOUDFLARE_API_TOKEN: credential.token }),
+      // A shell-level Account ID must never override a site's wrangler.jsonc.
+      CLOUDFLARE_ACCOUNT_ID: undefined,
+    };
   }
 
   private async runStep(
@@ -255,7 +304,7 @@ export class SiteToolkitService {
   private async readWhoami(
     cwd: string,
     allowFailure = false,
-    env?: Readonly<Record<string, string>>,
+    env?: Readonly<Record<string, string | undefined>>,
   ): Promise<CloudflareWhoami> {
     const result = await this.runWrangler(["whoami", "--json"], cwd, {
       allowFailure,
@@ -287,7 +336,9 @@ export class SiteToolkitService {
     return { organizationAccessible, canCreate };
   }
 
-  async doctor(start = this.cwd): Promise<DoctorResult> {
+  async doctor(options: DoctorOptions = {}): Promise<DoctorResult> {
+    const workspace = resolve(options.start ?? this.cwd);
+    const accountId = options.accountId === undefined ? undefined : normalizeAccountId(options.accountId);
     const checks: DoctorCheck[] = [];
     const dependencies: ReadonlyArray<readonly [string, string, readonly string[]]> = [
       ["git", "git", ["--version"]],
@@ -351,7 +402,32 @@ export class SiteToolkitService {
       });
     }
 
-    const whoami = await this.readWhoami(this.toolkitRoot, true);
+    let credential: ResolvedCredential | undefined;
+    let credentialError: SiteError | undefined;
+    try {
+      credential = await this.resolveCloudflareCredential(accountId);
+    } catch (error) {
+      credentialError = error instanceof SiteError
+        ? error
+        : new SiteError("CREDENTIAL_STORE_UNAVAILABLE", "Cannot read the system credential store", {}, { cause: error });
+    }
+    checks.push({
+      name: "credential:cloudflare-api-token",
+      ok: credential !== undefined,
+      ...(credential === undefined
+        ? { code: credentialError?.code ?? "CF_CI_SECRET_MISSING" }
+        : {}),
+      detail: credential === undefined
+        ? credentialError?.message ?? "not available for the requested Cloudflare Account"
+        : `available from ${credential.source}`,
+    });
+
+    const whoami = credential === undefined
+      ? { loggedIn: false }
+      : await this.readWhoami(this.toolkitRoot, true, {
+          CLOUDFLARE_API_TOKEN: credential.token,
+          CLOUDFLARE_ACCOUNT_ID: undefined,
+        });
     checks.push({
       name: "auth:cloudflare",
       ok: whoami.loggedIn === true,
@@ -359,173 +435,80 @@ export class SiteToolkitService {
       detail: whoami.loggedIn === true ? "authenticated" : "not authenticated",
     });
 
-    let workspace: string | undefined;
+    const accounts = accountsFromWhoami(whoami);
     let account: Account | undefined;
-    try {
-      workspace = await findWorkspaceRoot(start);
-      const config = await loadWorkspaceConfig(workspace);
-      account = { id: config.cloudflare.accountId, name: config.cloudflare.accountName };
-      const accountVisible = accountsFromWhoami(whoami).some((candidate) => candidate.id === account?.id);
-      checks.push({
-        name: "workspace",
-        ok: true,
-        detail: workspace,
-      });
+    if (accountId !== undefined) {
+      account = accounts.find((candidate) => candidate.id === accountId);
       checks.push({
         name: "cloudflare:account",
-        ok: whoami.loggedIn === true && accountVisible,
-        ...(whoami.loggedIn === true && accountVisible ? {} : { code: "CF_ACCOUNT_NOT_FOUND" }),
-        detail: `${account.name} (${account.id})`,
-      });
-      const ciToken = readCloudflareToken();
-      checks.push({
-        name: "credential:cloudflare-api-token",
-        ok: ciToken !== undefined,
-        ...(ciToken === undefined ? { code: "CF_CI_SECRET_MISSING" } : {}),
-        detail: ciToken === undefined ? "CLOUDFLARE_API_TOKEN is not set" : "available from environment",
-      });
-    } catch (error) {
-      const siteError = error instanceof SiteError ? error : undefined;
-      checks.push({
-        name: "workspace",
-        ok: false,
-        code: siteError?.code ?? "WORKSPACE_INVALID",
-        detail: siteError?.message ?? String(error),
+        ok: account !== undefined,
+        ...(account === undefined ? { code: "CF_ACCOUNT_NOT_FOUND" } : {}),
+        detail: account === undefined ? `${accountId} is not accessible` : `${account.name} (${account.id})`,
       });
     }
 
     return {
       ready: checks.every((check) => check.ok),
       checks,
-      ...(workspace === undefined ? {} : { workspace }),
+      workspace,
       ...(account === undefined ? {} : { account }),
+      accounts,
+      ...(credential === undefined ? {} : { credentialSource: credential.source }),
+      ...(accountId !== undefined && (credential === undefined || whoami.loggedIn !== true || account === undefined)
+        ? { credentialGuidance: cloudflareCredentialGuidance(accountId) }
+        : {}),
     };
   }
 
-  async init(options: InitOptions): Promise<{ workspace: string; account: Account; changed: readonly string[] }> {
-    const workspace = resolve(options.workspace);
-    await mkdir(workspace, { recursive: true });
-
-    for (const [command, args] of [
-      ["git", ["--version"]],
-      ["pnpm", ["--version"]],
-      ["gh", ["--version"]],
-    ] as const) {
-      if (!(await commandAvailable(this.runner, command, args, this.toolkitRoot))) {
-        throw new SiteError("DEPENDENCY_MISSING", `${command} is required`, { command });
-      }
+  async saveCloudflareCredential(accountIdInput: string, tokenInput: string): Promise<Record<string, unknown>> {
+    const accountId = normalizeAccountId(accountIdInput);
+    const token = tokenInput.trim();
+    if (token.length === 0) {
+      throw new SiteError("VALIDATION_ERROR", "Cloudflare API Token cannot be empty");
     }
 
-    let githubAuth = await this.runner.run("gh", ["auth", "status"], {
-      cwd: workspace,
-      allowFailure: true,
+    const whoami = await this.readWhoami(this.toolkitRoot, true, {
+      CLOUDFLARE_API_TOKEN: token,
+      CLOUDFLARE_ACCOUNT_ID: undefined,
     });
-    if (githubAuth.exitCode !== 0) {
-      if (options.nonInteractive) {
-        throw new SiteError("AUTH_GITHUB_MISSING", "GitHub authentication is required");
-      }
-      await this.runner.run("gh", ["auth", "login", "--web", "--git-protocol", "https"], {
-        cwd: workspace,
-        interactive: true,
-      });
-      githubAuth = await this.runner.run("gh", ["auth", "status"], { cwd: workspace });
-    }
-    await this.runner.run("gh", ["auth", "setup-git"], { cwd: workspace });
-    if (!(await this.githubRepositoryAccess(workspace)).canCreate) {
-      throw new SiteError(
-        "AUTH_GITHUB_SCOPE_INSUFFICIENT",
-        `Current GitHub identity cannot create repositories in ${GITHUB_ORGANIZATION}`,
-      );
-    }
-
-    let existing: WorkspaceConfig | undefined;
-    if (await exists(join(workspace, WORKSPACE_CONFIG_FILE))) {
-      existing = await loadWorkspaceConfig(workspace);
-    }
-    const candidateAccountId = options.accountId ?? existing?.cloudflare.accountId;
-    const token = options.apiToken ?? readCloudflareToken();
-    if (!token) {
-      throw new SiteError(
-        "AUTH_CLOUDFLARE_MISSING",
-        "CLOUDFLARE_API_TOKEN is required; save it in your environment and run site init again",
-      );
-    }
-    let whoami: CloudflareWhoami;
-    try {
-      whoami = await this.readWhoami(this.toolkitRoot, false, {
-        CLOUDFLARE_API_TOKEN: token,
-        ...(candidateAccountId === undefined ? {} : { CLOUDFLARE_ACCOUNT_ID: candidateAccountId }),
-      });
-    } catch (error) {
-      throw new SiteError("AUTH_CLOUDFLARE_MISSING", "Cloudflare API Token validation failed", {}, { cause: error });
-    }
-
-    const accounts = accountsFromWhoami(whoami);
-    if (accounts.length === 0) {
-      throw new SiteError("CF_ACCOUNT_NOT_FOUND", "No Cloudflare Account is available");
-    }
-    let account = options.accountId === undefined
-      ? accounts.length === 1
-        ? accounts[0]
-        : undefined
-      : accounts.find((candidate) => candidate.id === options.accountId);
-    if (options.accountId !== undefined && !account) {
-      throw new SiteError("CF_ACCOUNT_NOT_FOUND", "Requested Cloudflare Account is not accessible", {
-        accountId: options.accountId,
+    if (whoami.loggedIn !== true) {
+      throw new SiteError("AUTH_CLOUDFLARE_MISSING", "Cloudflare rejected the API Token", {
+        credentialGuidance: cloudflareCredentialGuidance(accountId),
       });
     }
-    if (!account && options.chooseAccount) {
-      account = await options.chooseAccount(accounts);
-    }
-    if (!account) {
-      throw new SiteError("USER_INPUT_REQUIRED", "A Cloudflare Account must be selected", {
-        accounts: accounts.map(({ id, name }) => ({ id, name })),
+    const account = accountsFromWhoami(whoami).find((candidate) => candidate.id === accountId);
+    if (account === undefined) {
+      throw new SiteError("CF_ACCOUNT_NOT_FOUND", "Cloudflare API Token cannot access the requested Account", {
+        accountId,
+        credentialGuidance: cloudflareCredentialGuidance(accountId),
       });
     }
 
-    const changed: string[] = [];
-    const config: WorkspaceConfig = {
-      schemaVersion: SCHEMA_VERSION,
-      organization: GITHUB_ORGANIZATION,
-      cloudflare: { accountId: account.id, accountName: account.name },
+    await this.credentialStore.set(accountId, token);
+    this.credentialCache.set(accountId, token);
+    return {
+      account,
+      credentialStore: CREDENTIAL_SERVICE,
+      credentialSource: "system-credential-store",
     };
-    if (JSON.stringify(existing) !== JSON.stringify(config)) {
-      await writeWorkspaceConfig(workspace, config);
-      changed.push(WORKSPACE_CONFIG_FILE);
-    }
-
-    return { workspace, account, changed };
   }
 
-  private async assertSiteAccount(siteRoot: string): Promise<void> {
-    const wrangler = await loadWranglerConfig(siteRoot);
-    const environmentAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
-    if (environmentAccount && environmentAccount !== wrangler.account_id) {
-      throw new SiteError("CF_ACCOUNT_MISMATCH", "Environment Account ID does not match wrangler.jsonc", {
-        configured: wrangler.account_id,
-        environment: environmentAccount,
-      });
-    }
-    try {
-      const workspace = await findWorkspaceRoot(siteRoot);
-      const config = await loadWorkspaceConfig(workspace);
-      if (config.cloudflare.accountId !== wrangler.account_id) {
-        throw new SiteError("CF_ACCOUNT_MISMATCH", "Workspace Account ID does not match wrangler.jsonc", {
-          configured: wrangler.account_id,
-          workspace: config.cloudflare.accountId,
-        });
-      }
-    } catch (error) {
-      if (error instanceof SiteError && error.code === "WORKSPACE_NOT_INITIALIZED") return;
-      throw error;
-    }
+  async forgetCloudflareCredential(accountIdInput: string): Promise<Record<string, unknown>> {
+    const accountId = normalizeAccountId(accountIdInput);
+    const deleted = await this.credentialStore.delete(accountId);
+    this.credentialCache.delete(accountId);
+    return {
+      accountId,
+      deleted,
+      credentialStore: CREDENTIAL_SERVICE,
+      note: "This only removes the local credential; revoke the Token in Cloudflare if required.",
+    };
   }
 
   async check(start = this.cwd): Promise<CheckResult> {
     const root = await findSiteRoot(start);
     const site = await loadSiteConfig(root);
     const wrangler = await loadWranglerConfig(root);
-    await this.assertSiteAccount(root);
     const steps: StepResult[] = [];
     let currentStep = "configuration";
     try {
@@ -579,11 +562,12 @@ export class SiteToolkitService {
   private async deploymentUrls(site: SiteConfig, wrangler: WranglerConfig): Promise<readonly string[]> {
     if (site.healthChecks.length > 0) return site.healthChecks;
 
-    const token = readCloudflareToken();
-    if (!token) {
+    const credential = await this.resolveCloudflareCredential(wrangler.account_id);
+    if (credential === undefined) {
       throw new SiteError(
         "AUTH_CLOUDFLARE_MISSING",
-        "CLOUDFLARE_API_TOKEN is required to resolve the workers.dev deployment URL",
+        "A Cloudflare API Token is required to resolve the workers.dev deployment URL",
+        { credentialGuidance: cloudflareCredentialGuidance(wrangler.account_id) },
       );
     }
 
@@ -592,7 +576,7 @@ export class SiteToolkitService {
       response = await this.fetcher(
         `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(wrangler.account_id)}/workers/subdomain`,
         {
-          headers: { Authorization: `Bearer ${token}` },
+          headers: { Authorization: `Bearer ${credential.token}` },
           signal: AbortSignal.timeout(10_000),
         },
       );
@@ -719,7 +703,6 @@ export class SiteToolkitService {
     const root = await findSiteRoot(start);
     const site = await loadSiteConfig(root);
     const wrangler = await loadWranglerConfig(root);
-    await this.assertSiteAccount(root);
     const remote = await this.runner.run("git", ["config", "--get", "remote.origin.url"], {
       cwd: root,
       allowFailure: true,
@@ -755,7 +738,6 @@ export class SiteToolkitService {
 
   async versions(start = this.cwd): Promise<unknown> {
     const root = await findSiteRoot(start);
-    await this.assertSiteAccount(root);
     const result = await this.runWrangler(["versions", "list", "--json"], root);
     return parseJsonOutput<unknown>(result, "wrangler versions list");
   }
@@ -767,7 +749,6 @@ export class SiteToolkitService {
     const root = await findSiteRoot(start);
     const site = await loadSiteConfig(root);
     const wrangler = await loadWranglerConfig(root);
-    await this.assertSiteAccount(root);
     const before = await this.cloudflareStatus(root);
     const args = "versionId" in target
       ? ["rollback", target.versionId, "--message", `site rollback to ${target.versionId}`, "--yes"]
@@ -786,24 +767,44 @@ export class SiteToolkitService {
   async create(options: CreateOptions): Promise<Record<string, unknown>> {
     const repository = normalizeRepositoryName(options.repository);
     const displayName = normalizeDisplayName(options.displayName);
+    const accountId = normalizeAccountId(options.accountId);
     const domain = options.domain === undefined ? undefined : normalizeDomain(options.domain);
     if (domain === undefined && options.aliases.length > 0) {
       throw new SiteError("VALIDATION_ERROR", "Aliases require a primary custom domain");
     }
     const aliases = [...new Set(options.aliases.map(normalizeDomain))].filter((alias) => alias !== domain);
-    const workspace = await findWorkspaceRoot(this.cwd);
-    const workspaceConfig = await loadWorkspaceConfig(workspace);
+    const workspace = this.cwd;
     const target = join(workspace, repository);
     const siteId = toWorkerName(repository);
     const fullRepository = `${GITHUB_ORGANIZATION}/${repository}`;
 
     if (!options.skipRemote) {
-      const diagnosis = await this.doctor(workspace);
+      const diagnosis = await this.doctor({ start: workspace, accountId });
       if (!diagnosis.ready) {
-        throw new SiteError("WORKSPACE_INVALID", "Workspace is not ready; run site doctor for details", {
-          checks: diagnosis.checks.filter((check) => !check.ok),
-        });
+        const failed = diagnosis.checks.filter((check) => !check.ok);
+        const credentialGuidance = cloudflareCredentialGuidance(accountId);
+        if (failed.some((check) => check.code === "CREDENTIAL_STORE_UNAVAILABLE")) {
+          throw new SiteError("CREDENTIAL_STORE_UNAVAILABLE", "Cannot access the system credential store", {
+            checks: failed,
+            credentialGuidance,
+          });
+        }
+        if (failed.some((check) => check.code === "AUTH_CLOUDFLARE_MISSING" || check.code === "CF_CI_SECRET_MISSING")) {
+          throw new SiteError("AUTH_CLOUDFLARE_MISSING", "CLOUDFLARE_API_TOKEN is missing or invalid", {
+            checks: failed,
+            credentialGuidance,
+          });
+        }
+        if (failed.some((check) => check.code === "CF_ACCOUNT_NOT_FOUND")) {
+          throw new SiteError("CF_ACCOUNT_NOT_FOUND", "Cloudflare API Token cannot access the requested Account", {
+            accountId,
+            checks: failed,
+            credentialGuidance,
+          });
+        }
+        throw new SiteError("PREFLIGHT_FAILED", "Create preflight failed; run site doctor for details", { checks: failed });
       }
+      await this.runner.run("gh", ["auth", "setup-git"], { cwd: workspace });
       const remote = await this.runner.run("gh", ["repo", "view", fullRepository, "--json", "name"], {
         cwd: workspace,
         allowFailure: true,
@@ -831,7 +832,7 @@ export class SiteToolkitService {
       const worker = await this.runWrangler(
         ["versions", "list", "--name", siteId, "--json"],
         this.toolkitRoot,
-        { allowFailure: true },
+        { allowFailure: true, accountId },
       );
       if (worker.exitCode === 0 && !linkedExistingSite) {
         throw new SiteError("RESOURCE_CONFLICT", "Cloudflare Worker name is already in use", {
@@ -853,13 +854,20 @@ export class SiteToolkitService {
           actual: existing.id,
         });
       }
+      const existingWrangler = await loadWranglerConfig(target);
+      if (existingWrangler.account_id !== accountId) {
+        throw new SiteError("CF_ACCOUNT_MISMATCH", "Existing site belongs to a different Cloudflare Account", {
+          configured: existingWrangler.account_id,
+          requested: accountId,
+        });
+      }
     } else {
       await renderVueTemplate({
         targetDirectory: target,
         repository,
         siteId,
         displayName,
-        accountId: workspaceConfig.cloudflare.accountId,
+        accountId,
         ...(domain === undefined ? {} : { domain }),
         aliases,
         withBackend: options.withBackend,
@@ -924,30 +932,18 @@ export class SiteToolkitService {
       }
     }
 
-    const cloudflareToken = readCloudflareToken();
-    if (!cloudflareToken) {
+    const credential = await this.resolveCloudflareCredential(accountId);
+    if (credential === undefined) {
       throw new SiteError(
         "CF_CI_SECRET_MISSING",
-        "Cloudflare CI token is unavailable; set CLOUDFLARE_API_TOKEN in the environment",
+        "Cloudflare CI token is unavailable",
+        { credentialGuidance: cloudflareCredentialGuidance(accountId) },
       );
     }
     await this.runner.run(
       "gh",
       ["secret", "set", "CLOUDFLARE_API_TOKEN", "--repo", fullRepository],
-      { cwd: target, input: `${cloudflareToken}\n` },
-    );
-    await this.runner.run(
-      "gh",
-      [
-        "variable",
-        "set",
-        "CLOUDFLARE_ACCOUNT_ID",
-        "--repo",
-        fullRepository,
-        "--body",
-        workspaceConfig.cloudflare.accountId,
-      ],
-      { cwd: target },
+      { cwd: target, input: `${credential.token}\n` },
     );
     await this.runner.run("git", ["push", "--set-upstream", "origin", "main"], { cwd: target });
 

@@ -12,6 +12,24 @@ describe("ProcessRunner", () => {
     expect(result.stdout).toBe(value);
   });
 
+  it("can remove an inherited environment variable for a child command", async () => {
+    const runner = new ProcessRunner();
+    const key = "SITE_TOOLKIT_TEST_ACCOUNT";
+    const previous = process.env[key];
+    process.env[key] = "wrong-account";
+    try {
+      const result = await runner.run(
+        process.execPath,
+        ["-e", `process.stdout.write(process.env.${key} ?? "")`],
+        { cwd: process.cwd(), env: { [key]: undefined } },
+      );
+      expect(result.stdout).toBe("");
+    } finally {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
+  });
+
   it("parses command JSON", () => {
     expect(
       parseJsonOutput<{ ok: boolean }>(

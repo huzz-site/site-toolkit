@@ -21,11 +21,11 @@ GitHub Organization：[`huzz-site`](https://github.com/huzz-site)
 
 ## 2. v1 必须实现的目标
 
-### G1：一次初始化
+### G1：无初始化状态，按账号保存凭据
 
-`site init` 完成工作站检查、GitHub 登录、Cloudflare API Token 验证和默认 Account 选择。Token 由用户使用操作系统、密码管理器或 Shell 自行保存，CLI 只从环境变量读取。初始化必须可重复执行。
+CLI 不提供 `site init`，也不保存工作区级默认 Cloudflare Account。非交互 `site doctor` 负责只读环境检查，交互 `doctor` 可在凭据失败时进入明确的认证流程；`site create` 要求显式传入目标 Account ID，并在任何站点写操作之前完成权限验证。
 
-GitHub 浏览器授权和 Cloudflare Token 创建仍需要用户本人确认；确认完成后 CLI 自动验证并继续。首版不再维护一套额外的 Wrangler OAuth 凭证。
+GitHub 登录和 Cloudflare Token 创建仍需要用户本人确认。`site auth login --account-id` 打开 Cloudflare 官方页面、隐藏接收 Token、验证目标 Account，然后把 Token 按 Account ID 保存到操作系统凭据库。CLI 不保存工作区默认账号，也不在项目配置中存 Token。CI 继续支持从 `CLOUDFLARE_API_TOKEN` 读取凭据。
 
 ### G2：一条命令创建网站
 
@@ -37,6 +37,7 @@ GitHub 浏览器授权和 Cloudflare Token 创建仍需要用户本人确认；�
 - 生成配置、测试和 GitHub Actions 工作流。
 - 首次提交并推送 `main`。
 - 首次部署到 Cloudflare Workers。
+- 验证当前 Token 能访问显式指定的 Cloudflare Account，并把 Account ID 固化在站点配置中。
 - 返回仓库地址、Worker、Version 和 `workers.dev` 访问 URL；显式配置域名时返回自定义域名 URL。
 
 ### G3：确定性部署
@@ -55,7 +56,7 @@ CLI 可以查看单站点状态、重新部署、查看历史版本和回滚。�
 
 ### G6：首个真实站点
 
-`huzz-site/huzz.cn` 是第一个端到端验收站点，但“弧之舟”的品牌、域名和内容只存在于该站点仓库，不进入通用工具。首次部署可以只使用 `workers.dev`，不要求先改动 `huzz.cn` 的 DNS。
+`huzz-site/huzz.top` 是当前端到端验收站点，但它的品牌、域名和内容只存在于该站点仓库，不进入通用工具。首次部署可以只使用 `workers.dev`，不要求先改动 DNS。
 
 ## 3. v1 明确不做
 
@@ -65,7 +66,7 @@ CLI 可以查看单站点状态、重新部署、查看历史版本和回滚。�
 - 不实现通用 `site secret` 管理；第一个后端真正需要业务 Secret 时再补。
 - 不实现 `site client`、维护等级或合同信息管理。
 - 不实现 Delivery Manifest、`plan/apply` 或复杂任务恢复引擎。
-- 不实现多 Cloudflare Account Profile 编排；v1 使用一个默认代管 Account。
+- 不实现命名 Account Profile、Token 文件仓库或隐式账号切换状态；每次创建显式传入 Account ID，系统凭据只按 ID 查找。
 - 不实现预览、批准、生产提升三段式发布流程。
 - 不实现 GitHub Environment 审批系统。
 - 不实现跨仓库 Fleet 巡检、批量升级或批量部署。
@@ -147,7 +148,7 @@ huzz.cn/
   "id": "huzz-cn",
   "displayName": "弧之舟",
   "template": "vue",
-  "templateVersion": "1.1.0",
+  "templateVersion": "1.2.0",
   "packageManager": "pnpm",
   "build": {
     "command": "pnpm",
@@ -201,8 +202,9 @@ Git           git CLI
 ### 7.1 v1 命令面
 
 ```text
-site init                     初始化工作站、GitHub 和默认 Cloudflare Account
-site doctor                   检查依赖、认证、权限和工作区
+site doctor                   检查依赖、认证、权限和可选的 Cloudflare Account
+site auth login               交互式验证并保存一个 Account 的 Token
+site auth forget              移除一个 Account 的本机 Token（不做远端撤销）
 site create                   创建完整网站、仓库并首次部署
 site check                    执行配置、类型、测试、构建和 dry-run 检查
 site dev                      启动统一的本地开发环境
@@ -225,40 +227,29 @@ site rollback                 回退到指定或上一个 Worker Version
 
 ## 8. 核心流程
 
-### 8.1 `site init`
+### 8.1 `site doctor`
 
-流程：
+Service 层的 `doctor` 是只读检查，不产生持久化状态：
 
 1. 检查 Git、Node.js、pnpm、`gh` 和项目 Wrangler。
-2. 验证当前目录是预期的 `huzz-site` 工作区。
-3. 运行 `gh auth status`；未登录时发起浏览器登录。
-4. 验证当前身份可以访问并创建 `huzz-site` 组织仓库。
-5. 从 `CLOUDFLARE_API_TOKEN` 环境变量读取 Cloudflare 的 `Edit Cloudflare Workers` Token，并用 `wrangler whoami --json` 验证。
-6. 从 Token 可访问的 Accounts 中选择默认 Account；只有一个时自动选择，多个时由用户选择一次。
-7. 保存非敏感的默认 Account ID 和名称。
-8. 验证完整配置并输出结果；CLI 不持久化 Token。
+2. 运行 `gh auth status`，验证当前身份可以访问并创建 `huzz-site` 组织仓库。
+3. 有显式 Account ID 时优先从系统凭据库按 ID 读取 Token；没有时回退到 `CLOUDFLARE_API_TOKEN`。
+4. 用 `wrangler whoami --json` 验证 Token。
+5. 传入 `--account-id` 时，确认该 Account 出现在 Token 的可访问账号中。
+6. Token 缺失、无效或无权访问目标 Account 时，返回官方 Token 创建入口、`site auth login` 命令、模板名称和验证命令。
+7. 输出完整结构化检查结果。
 
-同一个受限 API Token 可以同时服务本地 Wrangler 和 CI。用户负责在执行 CLI 前把 Token 注入 `CLOUDFLARE_API_TOKEN`；CLI 不把它写入项目文件或日志。创建仓库时，CLI 从当前环境读取 Token，并通过标准输入写入该仓库自己的 GitHub Actions Secret。
+交互式 `site doctor --account-id` 在凭据失败时会调用认证流程并重新检查；`--non-interactive` 保持严格只读，绝不打开浏览器或等待输入。`site auth login` 最多允许三次隐藏输入，只有 Token 通过目标 Account 验证后才写入 macOS Keychain、Windows Credential Manager 或 Linux Secret Service。这里不自建“解锁密码 + 加密文件”：无人值守流程仍需保存解密密钥，会把问题转移而不是消除。
+
+同一个受限 API Token 可以同时服务本地 Wrangler 和 CI。创建仓库时，CLI 从目标 Account 的系统凭据或环境变量取得 Token，并通过标准输入写入该仓库自己的 GitHub Actions Secret。
 
 不使用 Organization Secret：`huzz-site` 当前是 GitHub Free，组织级 Secret/Variable 无法被私有仓库使用。仓库级 Secret 可同时支持公开和私有站点，也不需要 `admin:org` 权限。
 
 ```bash
-site init
-site init --non-interactive --json
+site doctor
+site auth login --account-id <ACCOUNT_ID>
+site doctor --account-id <ACCOUNT_ID> --non-interactive --json
 ```
-
-非交互模式遇到未完成的登录或缺失参数时直接失败，不等待输入。
-
-### 8.2 `site doctor`
-
-检查：
-
-- 固定 GitHub Organization 是否可访问。
-- GitHub 登录和 Cloudflare API Token 是否有效。
-- 默认 Cloudflare Account 是否可访问。
-- 当前环境中是否存在 `CLOUDFLARE_API_TOKEN`。
-- Node.js、pnpm、Wrangler 和 CLI 版本是否兼容。
-- 工作区、目录和仓库是否冲突。
 
 稳定错误示例：
 
@@ -268,29 +259,31 @@ AUTH_GITHUB_SCOPE_INSUFFICIENT
 AUTH_CLOUDFLARE_MISSING
 CF_ACCOUNT_NOT_FOUND
 CF_CI_SECRET_MISSING
-WORKSPACE_INVALID
+CREDENTIAL_STORE_UNAVAILABLE
+PREFLIGHT_FAILED
 ```
 
-### 8.3 `site create`
+### 8.2 `site create`
 
 ```bash
-site create huzz.cn \
-  --display-name "弧之舟" \
-  --with-backend \
+site create huzz.top \
+  --display-name "HUZZ" \
+  --account-id <ACCOUNT_ID> \
+  --no-backend \
   --visibility private
 ```
 
 流程：
 
-1. 运行 `site doctor`。
-2. 校验本地目录、仓库名、Worker 名和可选域名。
-3. 检查本地目录、GitHub 仓库和 Worker 名冲突；显式配置域名时，Cloudflare 域名路由冲突由部署返回。
+1. 校验 Account ID、本地目录、仓库名、Worker 名和可选域名。
+2. 运行目标账号感知的 `site doctor --account-id`；Token 无权访问时在任何写操作前退出。
+3. 配置 GitHub Git 凭证，并检查本地目录、GitHub 仓库和 Worker 名冲突；显式配置域名时，Cloudflare 域名路由冲突由部署返回。
 4. 渲染固定版本的 Vue 模板。
 5. 生成 `site.config.json`、`wrangler.jsonc` 和最小工作流。
 6. 安装依赖并执行 `site check`。
 7. 初始化 Git，创建首次提交。
 8. 创建 `huzz-site/<repository>` GitHub 仓库。
-9. 为新仓库设置 `CLOUDFLARE_API_TOKEN` Secret 和 `CLOUDFLARE_ACCOUNT_ID` Variable。
+9. 为新仓库设置 `CLOUDFLARE_API_TOKEN` Secret；Account ID 只从已提交的 `wrangler.jsonc` 读取。
 10. 推送 `main` 并等待中央工作流完成首次部署。
 11. 中央工作流运行线上健康检查；本地创建进程不重复检查同一个地址。
 12. 输出仓库、Worker、Version 和 URL；默认是 `workers.dev`。
@@ -300,9 +293,10 @@ site create huzz.cn \
 非交互调用必须提供完整参数：
 
 ```bash
-site create huzz.cn \
-  --display-name "弧之舟" \
-  --with-backend \
+site create huzz.top \
+  --display-name "HUZZ" \
+  --account-id <ACCOUNT_ID> \
+  --no-backend \
   --visibility private \
   --non-interactive \
   --json
@@ -313,15 +307,16 @@ site create huzz.cn \
 ```bash
 site create huzz.cn \
   --display-name "弧之舟" \
+  --account-id <ACCOUNT_ID> \
   --domain huzz.cn \
   --alias www.huzz.cn \
   --with-backend \
   --visibility private
 ```
 
-`--alias` 只能与 `--domain` 一起使用。非交互模式必须明确仓库、显示名称、是否包含后端和可见性；域名不是必填项。
+`--alias` 只能与 `--domain` 一起使用。Account ID、仓库、显示名称、是否包含后端和可见性必须明确；域名不是必填项。
 
-### 8.4 `site check`
+### 8.3 `site check`
 
 固定执行：
 
@@ -333,7 +328,7 @@ site create huzz.cn \
 
 本地和 CI 使用同一实现。
 
-### 8.5 `site deploy`
+### 8.4 `site deploy`
 
 ```bash
 site deploy
@@ -363,13 +358,11 @@ on:
 jobs:
   deploy:
     uses: huzz-site/site-toolkit/.github/workflows/deploy.yml@v1
-    with:
-      cloudflare-account-id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
     secrets:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 ```
 
-### 8.6 `site rollback`
+### 8.5 `site rollback`
 
 ```bash
 site versions
@@ -454,9 +447,9 @@ JSON 输出：
 - Token 只通过环境变量、标准输入或仓库级 GitHub Secret 传递；本地持久化由用户管理。
 - Token 不进入命令参数、Git、stdout、日志或部署记录。
 - GitHub Organization 固定为 `huzz-site`。
-- 每个站点的 `wrangler.jsonc` 固定 Account ID，部署前必须校验。
+- 每个站点的 `wrangler.jsonc` 固定 Account ID；执行站点命令时，站点配置不会被 Shell 中遗留的 `CLOUDFLARE_ACCOUNT_ID` 覆盖。
 - 每个站点仓库只持有自身部署所需的 Cloudflare Secret；不依赖付费的组织级 Secret。
-- `init` 和 `create` 可重复执行；已满足步骤返回 `unchanged`。
+- `create` 可安全重试；已存在资源必须匹配同一仓库、Worker 和 Account ID，否则明确失败。
 - 删除仓库、Worker、域名和持久化数据不属于 v1 命令面。
 - 回滚必须由用户明确要求，Skill 不自行判断。
 
@@ -469,7 +462,7 @@ JSON 输出：
 | 私有 `site-registry` | 约 10 个以上活跃站点，或仅靠 Topic/仓库名已多次找错资源 | 增加非敏感站点与客户索引 |
 | `site list` 与 Topic | 本地目录和 GitHub Organization 已明显难以检索 | 先增加只读发现，不引入数据库 |
 | 通用 `site secret` | 第一个轻量后端需要由 CLI 管理业务 Secret | 只封装 Wrangler 的最小 put/list 操作 |
-| 多 Cloudflare Account | 第一个客户明确要求资源归自己，或共享账号产生账单/隔离风险 | 增加 Account Ref 和 Wrangler auth profile 适配 |
+| Account Profile | 多个账号的 Account ID 已经难以人工辨认，且输入错误重复发生 | 增加本地非敏感别名映射，不保存 Token |
 | 预览与批准后上线 | 第一个需要正式客户验收或生产审批的项目 | `versions upload` + Preview URL + `versions deploy` |
 | Delivery Manifest、`plan/apply` | 开始一次批量创建多个站点，或创建中断恢复成为常见问题 | 增加声明式 Manifest 和幂等执行计划 |
 | `site import` / `site adopt` | 第一个需要接管非标准项目的真实订单 | 只为实际遇到的框架增加适配器 |
@@ -487,18 +480,17 @@ JSON 输出：
 
 以下条件全部满足才算 v1 完成：
 
-1. `site init` 能验证环境中的 Token、完成默认账号准备，并可重复执行。
-2. `site doctor --json` 能报告依赖、GitHub、Cloudflare 和工作区状态。
-3. 一条非交互 `site create` 能创建独立仓库并完成首次部署。
-4. 默认站点包含 Vue 3 + Vite、可选 Worker 后端、`/api/health` 和测试。
-5. 推送 `main` 调用中央复用工作流并部署生产。
-6. 本地 `site check` 与 CI 使用同一实现。
-7. `site status` 能关联仓库、Actions、Worker、Version 和 Deployment。
-8. `site rollback --previous` 和 `--to <version-id>` 能恢复版本并通过健康检查。
-9. 初始化和创建命令重复执行时不会产生重复仓库或破坏配置。
-10. AI Skill 只依赖非交互 JSON 命令完成明确授权的创建、部署、查询和回滚。
-11. 自动化测试覆盖认证缺失、权限不足、名称冲突、构建失败、部署失败和回滚失败。
-12. `huzz-site/huzz.cn` 通过完整流程部署成功。
+1. `site doctor --account-id --json` 能报告依赖、GitHub、Token 和目标 Cloudflare Account 状态，且不写入配置。
+2. 一条带显式 Account ID 的非交互 `site create` 能创建独立仓库并完成首次部署。
+3. 默认站点包含 Vue 3 + Vite、可选 Worker 后端、`/api/health` 和测试。
+4. 推送 `main` 调用中央复用工作流并部署生产。
+5. 本地 `site check` 与 CI 使用同一实现。
+6. `site status` 能关联仓库、Actions、Worker、Version 和 Deployment。
+7. `site rollback --previous` 和 `--to <version-id>` 能恢复版本并通过健康检查。
+8. 创建命令重复执行时不会产生重复仓库或破坏配置，账号不一致时拒绝继续。
+9. AI Skill 只依赖非交互 JSON 命令完成明确授权的创建、部署、查询和回滚。
+10. 自动化测试覆盖认证缺失、权限不足、名称冲突、构建失败、部署失败和回滚失败。
+11. `huzz-site/huzz.top` 通过完整流程部署成功。
 
 ## 14. 实现顺序
 
@@ -511,12 +503,12 @@ JSON 输出：
 
 ### Phase 2：全自动交付
 
-- `init`、`create`、`deploy`、`status`。
+- `create`、`deploy`、`status`。
 - 固定 GitHub Organization 和仓库创建。
 - GitHub Actions 中央复用工作流。
-- Cloudflare Token 验证、Account 和仓库级 CI Secret 初始化。
+- Cloudflare Token 与显式 Account 验证、仓库级 CI Secret 配置。
 - `versions`、`rollback`。
-- 使用 `huzz.cn` 完成端到端验收。
+- 使用 `huzz.top` 完成端到端验收。
 
 ### Phase 3：Skill 绑定
 

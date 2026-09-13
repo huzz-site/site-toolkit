@@ -27,9 +27,12 @@ export class ProcessRunner implements CommandRunner {
   async run(command: string, args: readonly string[], options: RunOptions): Promise<CommandResult> {
     return new Promise((resolve, reject) => {
       const interactive = options.interactive ?? false;
+      const environment = Object.fromEntries(
+        Object.entries({ ...process.env, ...options.env }).filter((entry): entry is [string, string] => entry[1] !== undefined),
+      );
       const child = spawn(command, [...args], {
         cwd: options.cwd,
-        env: { ...process.env, ...options.env },
+        env: environment,
         shell: false,
         stdio: interactive ? "inherit" : [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       });

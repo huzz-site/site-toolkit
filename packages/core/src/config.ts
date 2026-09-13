@@ -1,29 +1,15 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import { parse as parseJsonc } from "jsonc-parser";
 import { z } from "zod";
 
 import {
-  GITHUB_ORGANIZATION,
   SCHEMA_VERSION,
   SITE_CONFIG_FILE,
-  WORKSPACE_CONFIG_FILE,
   WRANGLER_CONFIG_FILE,
 } from "./constants.js";
 import { SiteError } from "./errors.js";
-
-export const workspaceConfigSchema = z.object({
-  schemaVersion: z.literal(SCHEMA_VERSION),
-  organization: z.literal(GITHUB_ORGANIZATION),
-  cloudflare: z.object({
-    accountId: z.string().min(1),
-    accountName: z.string().min(1),
-  }),
-});
-
-export type WorkspaceConfig = z.infer<typeof workspaceConfigSchema>;
 
 export const siteConfigSchema = z.object({
   version: z.literal(SCHEMA_VERSION),
@@ -62,18 +48,6 @@ async function readAndParseJson(path: string): Promise<unknown> {
   }
 }
 
-export async function loadWorkspaceConfig(root: string): Promise<WorkspaceConfig> {
-  const path = join(root, WORKSPACE_CONFIG_FILE);
-  const parsed = workspaceConfigSchema.safeParse(await readAndParseJson(path));
-  if (!parsed.success) {
-    throw new SiteError("WORKSPACE_INVALID", "Workspace configuration is invalid", {
-      path,
-      issues: parsed.error.issues,
-    });
-  }
-  return parsed.data;
-}
-
 export async function loadSiteConfig(root: string): Promise<SiteConfig> {
   const path = join(root, SITE_CONFIG_FILE);
   const parsed = siteConfigSchema.safeParse(await readAndParseJson(path));
@@ -107,15 +81,4 @@ export async function loadWranglerConfig(root: string): Promise<WranglerConfig> 
     });
   }
   return parsed.data;
-}
-
-export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  await rename(temporary, path);
-}
-
-export async function writeWorkspaceConfig(root: string, value: WorkspaceConfig): Promise<void> {
-  await writeJsonAtomic(join(root, WORKSPACE_CONFIG_FILE), workspaceConfigSchema.parse(value));
 }
