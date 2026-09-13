@@ -957,7 +957,6 @@ export class SiteToolkitService {
     const site = await loadSiteConfig(target);
     const wrangler = await loadWranglerConfig(target);
     const urls = await this.deploymentUrls(site, wrangler);
-    const health = await this.healthCheck(urls);
 
     return {
       repository: fullRepository,
@@ -967,7 +966,11 @@ export class SiteToolkitService {
       workflow,
       ...cloudflare,
       urls,
-      health,
+      health: {
+        ok: true,
+        source: "github-actions",
+        workflowRunId: workflow.databaseId ?? null,
+      },
     };
   }
 }

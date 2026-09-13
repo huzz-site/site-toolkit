@@ -292,7 +292,7 @@ site create huzz.cn \
 8. 创建 `huzz-site/<repository>` GitHub 仓库。
 9. 为新仓库设置 `CLOUDFLARE_API_TOKEN` Secret 和 `CLOUDFLARE_ACCOUNT_ID` Variable。
 10. 推送 `main` 并等待中央工作流完成首次部署。
-11. 运行线上健康检查。
+11. 中央工作流运行线上健康检查；本地创建进程不重复检查同一个地址。
 12. 输出仓库、Worker、Version 和 URL；默认是 `workers.dev`。
 
 任何步骤失败时输出已完成步骤和恢复建议。默认不删除已经创建的远端资源。
