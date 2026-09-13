@@ -37,7 +37,7 @@ export const siteConfigSchema = z.object({
     args: z.array(z.string()).min(1),
     output: z.string().min(1),
   }),
-  healthChecks: z.array(z.url()).min(1),
+  healthChecks: z.array(z.url()),
 });
 
 export type SiteConfig = z.infer<typeof siteConfigSchema>;

@@ -92,8 +92,8 @@ program
   .description("create a Vue website, GitHub repository, and first deployment")
   .argument("<repository>", "repository name")
   .requiredOption("--display-name <name>", "site display name")
-  .requiredOption("--domain <domain>", "primary domain")
-  .option("--alias <domain>", "additional domain; repeatable", collect, [])
+  .option("--domain <domain>", "optional primary custom domain")
+  .option("--alias <domain>", "additional custom domain; repeatable", collect, [])
   .option("--with-backend", "include the lightweight Worker API")
   .option("--no-backend", "create an assets-only Worker")
   .addOption(new Option("--visibility <visibility>", "GitHub repository visibility").default("private").argParser(visibility))
@@ -102,7 +102,7 @@ program
       repository: string,
       options: {
         displayName: string;
-        domain: string;
+        domain?: string;
         alias: readonly string[];
         backend: boolean;
         withBackend?: boolean;
@@ -116,10 +116,13 @@ program
       if (globalOptions().nonInteractive && options.withBackend !== true && options.backend !== false) {
         throw new SiteError("VALIDATION_ERROR", "Non-interactive create requires --with-backend or --no-backend");
       }
+      if (options.domain === undefined && options.alias.length > 0) {
+        throw new SiteError("VALIDATION_ERROR", "--alias requires --domain");
+      }
       const result = await service().create({
         repository,
         displayName: options.displayName,
-        domain: options.domain,
+        ...(options.domain === undefined ? {} : { domain: options.domain }),
         aliases: options.alias,
         withBackend: options.withBackend === true || options.backend,
         visibility: options.visibility,

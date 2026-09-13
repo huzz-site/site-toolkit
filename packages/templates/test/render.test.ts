@@ -41,6 +41,7 @@ describe("renderVueTemplate", () => {
 
     expect(site).toMatchObject({ id: "huzz-cn", displayName: "弧之舟", template: "vue" });
     expect(wrangler).toMatchObject({ name: "huzz-cn", account_id: "account-123", main: "server/index.ts" });
+    expect(wrangler.workers_dev).toBe(false);
     expect(wrangler.assets).toMatchObject({ run_worker_first: ["/api/*"] });
     expect(wrangler.routes).toEqual([
       { pattern: "huzz.cn", custom_domain: true },
@@ -59,7 +60,6 @@ describe("renderVueTemplate", () => {
       siteId: "example-com",
       displayName: "Example",
       accountId: "account-123",
-      domain: "example.com",
       aliases: [],
       withBackend: false,
     });
@@ -67,7 +67,11 @@ describe("renderVueTemplate", () => {
     const { access } = await import("node:fs/promises");
     await expect(access(join(directory, "server/index.ts"))).rejects.toThrow();
     const wrangler = JSON.parse(await readFile(join(directory, "wrangler.jsonc"), "utf8")) as Record<string, unknown>;
+    const site = JSON.parse(await readFile(join(directory, "site.config.json"), "utf8")) as Record<string, unknown>;
     expect(wrangler).not.toHaveProperty("main");
+    expect(wrangler).not.toHaveProperty("routes");
+    expect(wrangler.workers_dev).toBe(true);
+    expect(site.healthChecks).toEqual([]);
   });
 
   it("escapes display names in markup without changing configuration data", async () => {

@@ -1,6 +1,6 @@
 ---
 name: site-operations
-description: Create, validate, deploy, inspect, or roll back websites managed by the huzz-site Site Toolkit CLI. Use only for repositories that contain site.config.json; do not use for unrelated Cloudflare projects.
+description: Create websites from an initialized huzz-site workspace, or validate, deploy, inspect, and roll back repositories managed by the Site Toolkit CLI. Existing sites must contain site.config.json; do not use for unrelated Cloudflare projects.
 ---
 
 # Site Operations
@@ -20,14 +20,14 @@ Parse stdout as the versioned result object. Treat stderr as human-readable prog
 ## Map intent to commands
 
 - Inspect readiness: `doctor`
-- Create and deploy a repository: `create <repository> --display-name <name> --domain <domain> [--alias <domain>] <--with-backend|--no-backend> --visibility <private|public>`
+- Create and deploy a repository: `create <repository> --display-name <name> [--domain <domain> [--alias <domain>]] <--with-backend|--no-backend> --visibility <private|public>`
 - Validate without upload: `check` or `deploy --dry-run`
 - Deploy the current committed site: `deploy`
 - Inspect the current deployment: `status`
 - List Worker versions: `versions`
 - Roll back: `rollback --previous` or `rollback --to <version-id>`
 
-For `create`, require the repository, display name, primary domain, backend choice, and visibility to be explicit. Never infer a Cloudflare Account; `site init` owns that selection.
+For `create`, require the repository, display name, backend choice, and visibility to be explicit. The primary domain is optional: omit it to deploy only to `workers.dev`; never invent one. `--alias` requires `--domain`. Never infer a Cloudflare Account; `site init` owns that selection.
 
 ## Boundaries
 

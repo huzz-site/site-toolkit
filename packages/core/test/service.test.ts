@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { renderVueTemplate } from "@huzz-site/site-templates";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { writeWorkspaceConfig } from "../src/config.js";
 import { SiteError } from "../src/errors.js";
@@ -50,6 +50,7 @@ async function renderSite(root: string): Promise<void> {
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
@@ -146,6 +147,57 @@ describe("SiteToolkitService failure boundaries", () => {
       }),
     ).rejects.toMatchObject<Partial<SiteError>>({ code: "RESOURCE_CONFLICT" });
     expect(runner.calls).toHaveLength(0);
+  });
+
+  it("rejects aliases when no primary custom domain is configured", async () => {
+    const workspace = await target();
+    const runner = new FakeRunner((command, args, options) => result(command, args, options.cwd));
+
+    await expect(
+      new SiteToolkitService({ cwd: workspace, toolkitRoot: workspace, runner }).create({
+        repository: "demo",
+        displayName: "Demo",
+        aliases: ["www.demo.example"],
+        withBackend: false,
+        visibility: "private",
+        skipRemote: true,
+      }),
+    ).rejects.toMatchObject<Partial<SiteError>>({ code: "VALIDATION_ERROR" });
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it("resolves the workers.dev URL for a site without a custom domain", async () => {
+    const root = await target();
+    await renderVueTemplate({
+      targetDirectory: root,
+      repository: "demo",
+      siteId: "demo",
+      displayName: "Demo",
+      accountId: "account-123",
+      aliases: [],
+      withBackend: true,
+      compatibilityDate: "2026-09-12",
+    });
+    vi.stubEnv("CLOUDFLARE_API_TOKEN", "test-token");
+    const runner = new FakeRunner((command, args, options) => {
+      const stdout = args.includes("versions") ? "[]" : "{}";
+      return result(command, args, options.cwd, stdout);
+    });
+    const fetcher = vi.fn<typeof globalThis.fetch>(async () => new Response(
+      JSON.stringify({ success: true, result: { subdomain: "huzz" } }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+
+    const status = await new SiteToolkitService({ cwd: root, toolkitRoot: root, runner, fetcher }).status();
+
+    expect(status.urls).toEqual([
+      "https://demo.huzz.workers.dev",
+      "https://demo.huzz.workers.dev/api/health",
+    ]);
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://api.cloudflare.com/client/v4/accounts/account-123/workers/subdomain",
+      expect.objectContaining({ headers: { Authorization: "Bearer test-token" } }),
+    );
   });
 
   it("classifies build failures as CHECK_FAILED", async () => {

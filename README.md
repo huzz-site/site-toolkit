@@ -2,7 +2,7 @@
 
 `site` 是 `huzz-site` 组织使用的确定性网站交付 CLI。它负责创建 Vue 3 + Vite + Cloudflare Workers 站点、执行统一检查、部署、查询状态和回滚。
 
-当前状态：v1 实施中，工具自身和生成站点的本地闭环已经通过；真实 Cloudflare 首次部署仍需完成 API Token 初始化。目标和取舍见 [架构文档](./docs/architecture.md)。
+默认部署目标是 Cloudflare Workers Static Assets，并直接返回 `workers.dev` 地址；自定义域名是可选配置。目标和取舍见 [架构文档](./docs/architecture.md)。
 
 ## 本地开发
 
@@ -10,6 +10,15 @@
 pnpm install
 pnpm check
 pnpm site --help
+```
+
+创建一个不绑定自定义域名的站点：
+
+```bash
+pnpm site --cwd .. --non-interactive --json create huzz.cn \
+  --display-name "弧之舟" \
+  --with-backend \
+  --visibility private
 ```
 
 初始化本地工作区：

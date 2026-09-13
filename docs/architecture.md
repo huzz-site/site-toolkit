@@ -12,7 +12,7 @@ GitHub Organization：[`huzz-site`](https://github.com/huzz-site)
 4. 一个仓库代表一个完整网站，包含前端和该网站的轻量后端，不单独拆分 API 仓库。
 5. 所有网站仓库统一放在 GitHub Organization `huzz-site` 下。
 6. `site-toolkit/` 是独立仓库，存放 CLI、模板、Schema 和复用工作流。
-7. 每个网站默认部署为一个 Cloudflare Worker，静态资源与轻量后端一起发布和回滚。
+7. 每个网站默认部署为一个 Cloudflare Worker，静态资源与轻量后端一起发布和回滚；默认使用 `workers.dev`，自定义域名按需绑定。
 8. CLI 使用 TypeScript + Node.js LTS + pnpm 实现。
 9. v1 只提供 Vue 3 + Vite + TypeScript 官方模板。
 10. Cloudflare 写操作通过站点本地锁定版本的 Wrangler 执行，不依赖全局 Wrangler。
@@ -37,7 +37,7 @@ GitHub 浏览器授权和 Cloudflare Token 创建仍需要用户本人确认；�
 - 生成配置、测试和 GitHub Actions 工作流。
 - 首次提交并推送 `main`。
 - 首次部署到 Cloudflare Workers。
-- 返回仓库地址、Worker、Version 和访问 URL。
+- 返回仓库地址、Worker、Version 和 `workers.dev` 访问 URL；显式配置域名时返回自定义域名 URL。
 
 ### G3：确定性部署
 
@@ -55,7 +55,7 @@ CLI 可以查看单站点状态、重新部署、查看历史版本和回滚。�
 
 ### G6：首个真实站点
 
-`huzz-site/huzz.cn` 是第一个端到端验收站点，但“弧之舟”的品牌、域名和内容只存在于该站点仓库，不进入通用工具。
+`huzz-site/huzz.cn` 是第一个端到端验收站点，但“弧之舟”的品牌、域名和内容只存在于该站点仓库，不进入通用工具。首次部署可以只使用 `workers.dev`，不要求先改动 `huzz.cn` 的 DNS。
 
 ## 3. v1 明确不做
 
@@ -107,7 +107,7 @@ huzz-site/                         # 本地工作区，不执行 git init
 网站前端
   + 可选轻量后端（/api、表单、Webhook 等）
   + 按需使用的 Cloudflare Bindings
-  + 主域名和子域名
+  + 可选的自定义域名
   = 一个 GitHub 仓库
   = 一个 Cloudflare Worker
   = 一个独立发布与回滚单元
@@ -134,7 +134,7 @@ huzz.cn/
 
 - GitHub 仓库身份：当前 Git remote。
 - GitHub Organization：CLI 内固定为 `huzz-site`。
-- Account ID、Worker、路由、域名和 Bindings：`wrangler.jsonc`。
+- Account ID、Worker、可选路由、域名和 Bindings：`wrangler.jsonc`。
 - 构建命令、产物目录、健康检查和模板版本：`site.config.json`。
 - 密钥：Wrangler 凭证存储、GitHub Actions Secrets 或 Cloudflare Secrets。
 
@@ -154,10 +154,7 @@ huzz.cn/
     "args": ["build"],
     "output": "dist"
   },
-  "healthChecks": [
-    "https://huzz.cn/",
-    "https://huzz.cn/api/health"
-  ]
+  "healthChecks": []
 }
 ```
 
@@ -174,16 +171,17 @@ huzz.cn/
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]
   },
-  "routes": [
-    { "pattern": "huzz.cn", "custom_domain": true },
-    { "pattern": "www.huzz.cn", "custom_domain": true }
-  ]
+  "workers_dev": true
 }
 ```
 
 Account ID 不是密钥，可以进入站点配置。Token 不得写入上述文件。
 
-自定义域名必须属于所选 Account 中的 active Cloudflare Zone。CLI 不替用户修改域名注册商 Nameserver；域名尚未接入 Cloudflare 时，先完成 Zone 激活再创建站点。
+`healthChecks` 为空时，CLI 根据 Worker 名和 Account 的 Workers 子域名生成线上检查地址。显式传入 `--domain` 后，模板改为 `workers_dev: false` 并生成 Cloudflare Custom Domain 路由，同时把该域名写入健康检查。
+
+`workers.dev` 适合作为零 DNS 改动的首次发布、验收和非关键站点地址；面向客户的正式生产站点应在交付时绑定 Custom Domain。这个交付建议不改变 CLI 的默认值，避免建站动作被 DNS 迁移阻塞。
+
+Custom Domain 要求域名所在 Zone 已在所选 Cloudflare Account 中激活。v1 不修改注册商 Nameserver，也不操作阿里云 DNS。单纯把外部 DNS 的 CNAME 指向 `workers.dev` 不能完成 Worker 路由和 TLS 证书绑定，因此不作为部署流程。若未来确实需要“保留外部 DNS + 自定义子域名”，再把 Cloudflare Pages 作为特殊部署目标加入，而不是让所有站点默认走 Pages。
 
 ## 7. CLI 技术方案
 
@@ -278,8 +276,6 @@ WORKSPACE_INVALID
 ```bash
 site create huzz.cn \
   --display-name "弧之舟" \
-  --domain huzz.cn \
-  --alias www.huzz.cn \
   --with-backend \
   --visibility private
 ```
@@ -287,8 +283,8 @@ site create huzz.cn \
 流程：
 
 1. 运行 `site doctor`。
-2. 校验本地目录、仓库名、Worker 名和域名。
-3. 检查本地目录、GitHub 仓库和 Worker 名冲突；Cloudflare 域名路由冲突由部署返回。
+2. 校验本地目录、仓库名、Worker 名和可选域名。
+3. 检查本地目录、GitHub 仓库和 Worker 名冲突；显式配置域名时，Cloudflare 域名路由冲突由部署返回。
 4. 渲染固定版本的 Vue 模板。
 5. 生成 `site.config.json`、`wrangler.jsonc` 和最小工作流。
 6. 安装依赖并执行 `site check`。
@@ -297,7 +293,7 @@ site create huzz.cn \
 9. 为新仓库设置 `CLOUDFLARE_API_TOKEN` Secret 和 `CLOUDFLARE_ACCOUNT_ID` Variable。
 10. 推送 `main` 并等待中央工作流完成首次部署。
 11. 运行线上健康检查。
-12. 输出仓库、Worker、Version 和 URL。
+12. 输出仓库、Worker、Version 和 URL；默认是 `workers.dev`。
 
 任何步骤失败时输出已完成步骤和恢复建议。默认不删除已经创建的远端资源。
 
@@ -306,13 +302,24 @@ site create huzz.cn \
 ```bash
 site create huzz.cn \
   --display-name "弧之舟" \
-  --domain huzz.cn \
-  --alias www.huzz.cn \
   --with-backend \
   --visibility private \
   --non-interactive \
   --json
 ```
+
+需要 Cloudflare Custom Domain 时才增加：
+
+```bash
+site create huzz.cn \
+  --display-name "弧之舟" \
+  --domain huzz.cn \
+  --alias www.huzz.cn \
+  --with-backend \
+  --visibility private
+```
+
+`--alias` 只能与 `--domain` 一起使用。非交互模式必须明确仓库、显示名称、是否包含后端和可见性；域名不是必填项。
 
 ### 8.4 `site check`
 
@@ -395,7 +402,7 @@ site rollback --to <version-id>
 - 修改内容或代码后提交到 GitHub，`main` 自动部署。
 - 部署失败由 GitHub Actions 和 CLI 返回明确错误。
 - 线上异常时执行 `site rollback --previous`。
-- 域名、Bindings 和健康检查继续保存在站点仓库中。
+- 可选域名、Bindings 和显式健康检查继续保存在站点仓库中；未配置域名时由 CLI 推导 `workers.dev` 检查地址。
 
 当站点还可以在几分钟内定位和处理时，不增加数据库、Registry、Dashboard 或定时巡检服务。
 

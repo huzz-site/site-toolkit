@@ -11,7 +11,7 @@ export interface RenderVueTemplateOptions {
   readonly siteId: string;
   readonly displayName: string;
   readonly accountId: string;
-  readonly domain: string;
+  readonly domain?: string;
   readonly aliases: readonly string[];
   readonly withBackend: boolean;
   readonly compatibilityDate?: string;
@@ -84,7 +84,11 @@ function packageJson(options: RenderVueTemplateOptions): Record<string, unknown>
 }
 
 function siteConfig(options: RenderVueTemplateOptions): Record<string, unknown> {
-  const origin = `https://${options.domain}`;
+  const healthChecks = options.domain === undefined
+    ? []
+    : options.withBackend
+      ? [`https://${options.domain}`, `https://${options.domain}/api/health`]
+      : [`https://${options.domain}`];
   return {
     $schema: "https://raw.githubusercontent.com/huzz-site/site-toolkit/v1/schemas/site.schema.json",
     version: 1,
@@ -98,7 +102,7 @@ function siteConfig(options: RenderVueTemplateOptions): Record<string, unknown> 
       args: ["build"],
       output: "dist",
     },
-    healthChecks: options.withBackend ? [origin, `${origin}/api/health`] : [origin],
+    healthChecks,
   };
 }
 
@@ -113,10 +117,15 @@ function wranglerConfig(options: RenderVueTemplateOptions): Record<string, unkno
       not_found_handling: "single-page-application",
       ...(options.withBackend ? { run_worker_first: ["/api/*"] } : {}),
     },
-    routes: [options.domain, ...options.aliases].map((pattern) => ({
-      pattern,
-      custom_domain: true,
-    })),
+    workers_dev: options.domain === undefined,
+    ...(options.domain === undefined
+      ? {}
+      : {
+          routes: [options.domain, ...options.aliases].map((pattern) => ({
+            pattern,
+            custom_domain: true,
+          })),
+        }),
     observability: { enabled: true },
     upload_source_maps: true,
   };

@@ -15,6 +15,8 @@ import {
   loadSiteConfig,
   loadWorkspaceConfig,
   loadWranglerConfig,
+  type SiteConfig,
+  type WranglerConfig,
   writeWorkspaceConfig,
   type WorkspaceConfig,
 } from "./config.js";
@@ -59,7 +61,7 @@ export interface InitOptions {
 export interface CreateOptions {
   readonly repository: string;
   readonly displayName: string;
-  readonly domain: string;
+  readonly domain?: string;
   readonly aliases: readonly string[];
   readonly withBackend: boolean;
   readonly visibility: "private" | "public";
@@ -120,6 +122,7 @@ export interface ServiceOptions {
   readonly cwd?: string;
   readonly toolkitRoot: string;
   readonly runner?: CommandRunner;
+  readonly fetcher?: typeof globalThis.fetch;
   readonly log?: (message: string) => void;
 }
 
@@ -190,12 +193,14 @@ export class SiteToolkitService {
   readonly cwd: string;
   readonly toolkitRoot: string;
   readonly runner: CommandRunner;
+  readonly fetcher: typeof globalThis.fetch;
   readonly log: (message: string) => void;
 
   constructor(options: ServiceOptions) {
     this.cwd = resolve(options.cwd ?? process.cwd());
     this.toolkitRoot = resolve(options.toolkitRoot);
     this.runner = options.runner ?? new ProcessRunner();
+    this.fetcher = options.fetcher ?? globalThis.fetch;
     this.log = options.log ?? (() => undefined);
   }
 
@@ -553,7 +558,7 @@ export class SiteToolkitService {
       let ok = false;
       for (let attempt = 0; attempt < 12; attempt += 1) {
         try {
-          const response = await fetch(url, { signal: AbortSignal.timeout(10_000), redirect: "follow" });
+          const response = await this.fetcher(url, { signal: AbortSignal.timeout(10_000), redirect: "follow" });
           lastStatus = response.status;
           ok = response.ok;
           if (ok) break;
@@ -569,6 +574,58 @@ export class SiteToolkitService {
       throw new SiteError("HEALTHCHECK_FAILED", "One or more production health checks failed", { failed });
     }
     return results;
+  }
+
+  private async deploymentUrls(site: SiteConfig, wrangler: WranglerConfig): Promise<readonly string[]> {
+    if (site.healthChecks.length > 0) return site.healthChecks;
+
+    const token = readCloudflareToken();
+    if (!token) {
+      throw new SiteError(
+        "AUTH_CLOUDFLARE_MISSING",
+        "CLOUDFLARE_API_TOKEN is required to resolve the workers.dev deployment URL",
+      );
+    }
+
+    let response: Response;
+    try {
+      response = await this.fetcher(
+        `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(wrangler.account_id)}/workers/subdomain`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(10_000),
+        },
+      );
+    } catch (error) {
+      throw new SiteError("COMMAND_FAILED", "Cannot resolve the Cloudflare workers.dev subdomain", {}, { cause: error });
+    }
+
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      throw new SiteError(
+        "COMMAND_FAILED",
+        "Cloudflare returned an invalid workers.dev subdomain response",
+        { status: response.status },
+        { cause: error },
+      );
+    }
+    const result = typeof payload === "object" && payload !== null
+      ? (payload as { success?: unknown; result?: unknown })
+      : undefined;
+    const subdomainResult = typeof result?.result === "object" && result.result !== null
+      ? result.result as { subdomain?: unknown }
+      : undefined;
+    if (!response.ok || result?.success !== true || typeof subdomainResult?.subdomain !== "string" || subdomainResult.subdomain.length === 0) {
+      throw new SiteError("COMMAND_FAILED", "Cloudflare did not return a workers.dev subdomain", {
+        status: response.status,
+        accountId: wrangler.account_id,
+      });
+    }
+
+    const origin = `https://${wrangler.name}.${subdomainResult.subdomain}.workers.dev`;
+    return wrangler.main === undefined ? [origin] : [origin, `${origin}/api/health`];
   }
 
   private async cloudflareStatus(root: string): Promise<{ deployment: unknown; version: unknown }> {
@@ -646,12 +703,14 @@ export class SiteToolkitService {
       throw new SiteError("DEPLOY_FAILED", "Cloudflare deployment failed", {}, { cause: error });
     }
     const site = await loadSiteConfig(root);
+    const wrangler = await loadWranglerConfig(root);
     const status = await this.cloudflareStatus(root);
-    const health = await this.healthCheck(site.healthChecks);
+    const urls = await this.deploymentUrls(site, wrangler);
+    const health = await this.healthCheck(urls);
     return {
       ...checked,
       ...status,
-      urls: site.healthChecks,
+      urls,
       health,
     };
   }
@@ -680,6 +739,7 @@ export class SiteToolkitService {
       { cwd: root, allowFailure: true },
     );
     const cloudflare = await this.cloudflareStatus(root);
+    const urls = await this.deploymentUrls(site, wrangler);
     return {
       id: site.id,
       displayName: site.displayName,
@@ -689,7 +749,7 @@ export class SiteToolkitService {
       accountId: wrangler.account_id,
       actions: actions.exitCode === 0 ? parseJsonOutput<unknown>(actions, "gh run list") : null,
       ...cloudflare,
-      urls: site.healthChecks,
+      urls,
     };
   }
 
@@ -706,6 +766,7 @@ export class SiteToolkitService {
   ): Promise<Record<string, unknown>> {
     const root = await findSiteRoot(start);
     const site = await loadSiteConfig(root);
+    const wrangler = await loadWranglerConfig(root);
     await this.assertSiteAccount(root);
     const before = await this.cloudflareStatus(root);
     const args = "versionId" in target
@@ -717,14 +778,18 @@ export class SiteToolkitService {
       throw new SiteError("ROLLBACK_FAILED", "Cloudflare rollback failed", {}, { cause: error });
     }
     const after = await this.cloudflareStatus(root);
-    const health = await this.healthCheck(site.healthChecks);
-    return { before, after, health };
+    const urls = await this.deploymentUrls(site, wrangler);
+    const health = await this.healthCheck(urls);
+    return { before, after, urls, health };
   }
 
   async create(options: CreateOptions): Promise<Record<string, unknown>> {
     const repository = normalizeRepositoryName(options.repository);
     const displayName = normalizeDisplayName(options.displayName);
-    const domain = normalizeDomain(options.domain);
+    const domain = options.domain === undefined ? undefined : normalizeDomain(options.domain);
+    if (domain === undefined && options.aliases.length > 0) {
+      throw new SiteError("VALIDATION_ERROR", "Aliases require a primary custom domain");
+    }
     const aliases = [...new Set(options.aliases.map(normalizeDomain))].filter((alias) => alias !== domain);
     const workspace = await findWorkspaceRoot(this.cwd);
     const workspaceConfig = await loadWorkspaceConfig(workspace);
@@ -795,7 +860,7 @@ export class SiteToolkitService {
         siteId,
         displayName,
         accountId: workspaceConfig.cloudflare.accountId,
-        domain,
+        ...(domain === undefined ? {} : { domain }),
         aliases,
         withBackend: options.withBackend,
       });
@@ -890,7 +955,9 @@ export class SiteToolkitService {
     const workflow = await this.waitForWorkflow(fullRepository, head.stdout.trim(), target);
     const cloudflare = await this.cloudflareStatus(target);
     const site = await loadSiteConfig(target);
-    const health = await this.healthCheck(site.healthChecks);
+    const wrangler = await loadWranglerConfig(target);
+    const urls = await this.deploymentUrls(site, wrangler);
+    const health = await this.healthCheck(urls);
 
     return {
       repository: fullRepository,
@@ -899,7 +966,7 @@ export class SiteToolkitService {
       checks,
       workflow,
       ...cloudflare,
-      urls: site.healthChecks,
+      urls,
       health,
     };
   }
