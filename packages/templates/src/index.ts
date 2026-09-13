@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const TEMPLATE_VERSION = "1.0.0";
+export const TEMPLATE_VERSION = "1.1.0";
 export const WRANGLER_VERSION = "4.131.1";
 
 export interface RenderVueTemplateOptions {

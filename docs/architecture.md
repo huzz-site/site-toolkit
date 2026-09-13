@@ -147,7 +147,7 @@ huzz.cn/
   "id": "huzz-cn",
   "displayName": "弧之舟",
   "template": "vue",
-  "templateVersion": "1.0.0",
+  "templateVersion": "1.1.0",
   "packageManager": "pnpm",
   "build": {
     "command": "pnpm",
