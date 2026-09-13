@@ -122,6 +122,53 @@ describe("SiteToolkitService failure boundaries", () => {
     expect(runner.calls.some(({ args }) => args.includes("login"))).toBe(false);
   });
 
+  it("replaces an invalid stored Cloudflare Token during interactive init", async () => {
+    const root = await target();
+    await writeWorkspaceConfig(root, {
+      schemaVersion: 1,
+      organization: "huzz-site",
+      cloudflare: { accountId: "account-123", accountName: "Default" },
+    });
+    let keychainToken = "invalid-token";
+    const runner = new FakeRunner((command, args, options) => {
+      if (command === "security" && args[0] === "find-generic-password") {
+        return result(command, args, options.cwd, `${keychainToken}\n`);
+      }
+      if (command === "security" && args[0] === "add-generic-password") {
+        expect(options.interactive).toBe(true);
+        keychainToken = "fresh-token";
+        return result(command, args, options.cwd);
+      }
+      if (command === "pnpm" && args.includes("whoami")) {
+        if (options.env?.CLOUDFLARE_API_TOKEN !== "fresh-token") {
+          throw new SiteError("COMMAND_FAILED", "invalid Cloudflare token");
+        }
+        return result(
+          command,
+          args,
+          options.cwd,
+          '{"loggedIn":true,"accounts":[{"id":"account-123","name":"Default"}]}',
+        );
+      }
+      if (command === "gh" && args[0] === "api" && args[1] === "orgs/huzz-site") {
+        return result(command, args, options.cwd, '{"members_can_create_repositories":true}');
+      }
+      if (command === "gh" && args[0] === "api" && args[1] === "user/memberships/orgs/huzz-site") {
+        return result(command, args, options.cwd, '{"role":"member","state":"active"}');
+      }
+      return result(command, args, options.cwd, "ok");
+    });
+
+    const initialized = await new SiteToolkitService({ cwd: root, toolkitRoot: root, runner }).init({
+      workspace: root,
+      nonInteractive: false,
+      readApiToken: async () => "fresh-token",
+    });
+
+    expect(initialized.changed).toContain("keychain:CLOUDFLARE_API_TOKEN");
+    expect(keychainToken).toBe("fresh-token");
+  });
+
   it("rejects a conflicting target directory before creating anything", async () => {
     const workspace = await target();
     await writeWorkspaceConfig(workspace, {

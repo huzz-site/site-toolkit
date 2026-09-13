@@ -238,7 +238,7 @@ site rollback                 回退到指定或上一个 Worker Version
 5. 隐藏读取 Cloudflare 的 `Edit Cloudflare Workers` API Token，并用 `wrangler whoami --json` 验证。
 6. 从 Token 可访问的 Accounts 中选择默认 Account；只有一个时自动选择，多个时由用户选择一次。
 7. 保存非敏感的默认 Account ID 和名称。
-8. 验证 CI Token，并保存到本机 macOS Keychain；不写明文配置文件。
+8. macOS Keychain 安全提示出现后，将同一个 Cloudflare Token 输入两次；CLI 读回并校验一致后完成保存，不写明文配置文件。
 9. 验证完整配置并输出结果。
 
 同一个受限 API Token 同时服务本地 Wrangler 和 CI。Token 通过隐藏输入读取，只写入 macOS Keychain，不进入项目文件、不打印。创建仓库时再从 Keychain 读取，并写入该仓库自己的 GitHub Actions Secret。
@@ -251,6 +251,7 @@ site init --non-interactive --json
 ```
 
 非交互模式遇到未完成的登录或缺失参数时直接失败，不等待输入。
+首次 Keychain 持久化必须在交互模式完成；这是为了避免把 Token 放进 `security` 命令参数或进程列表。
 
 ### 8.2 `site doctor`
 

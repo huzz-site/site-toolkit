@@ -11,11 +11,18 @@ export async function saveCloudflareToken(
   accountId: string,
   token: string,
   cwd: string,
+  interactive: boolean,
 ): Promise<void> {
   if (process.platform !== "darwin") {
     throw new SiteError(
       "DEPENDENCY_MISSING",
       "Secure token persistence currently requires macOS Keychain; use SITE_CLOUDFLARE_API_TOKEN on this platform",
+    );
+  }
+  if (!interactive) {
+    throw new SiteError(
+      "USER_INPUT_REQUIRED",
+      "Secure macOS Keychain storage requires an interactive terminal; run site init without --non-interactive",
     );
   }
   await runner.run(
@@ -29,8 +36,15 @@ export async function saveCloudflareToken(
       credentialAccount(accountId),
       "-w",
     ],
-    { cwd, input: `${token}\n${token}\n` },
+    { cwd, interactive: true },
   );
+  const storedToken = await readCloudflareToken(runner, accountId, cwd);
+  if (storedToken !== token) {
+    throw new SiteError(
+      "AUTH_CLOUDFLARE_MISSING",
+      "The Cloudflare API Token entered for macOS Keychain did not match the validated token; run site init again",
+    );
+  }
 }
 
 export async function readCloudflareToken(

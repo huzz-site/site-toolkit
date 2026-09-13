@@ -463,7 +463,7 @@ export class SiteToolkitService {
     const storedToken = candidateAccountId === undefined
       ? undefined
       : await readCloudflareToken(this.runner, candidateAccountId, workspace);
-    const token = options.apiToken
+    let token = options.apiToken
       ?? process.env.SITE_CLOUDFLARE_API_TOKEN
       ?? process.env.CLOUDFLARE_API_TOKEN
       ?? storedToken
@@ -478,7 +478,25 @@ export class SiteToolkitService {
         ...(candidateAccountId === undefined ? {} : { CLOUDFLARE_ACCOUNT_ID: candidateAccountId }),
       });
     } catch (error) {
-      throw new SiteError("AUTH_CLOUDFLARE_MISSING", "Cloudflare API Token validation failed", {}, { cause: error });
+      if (token === storedToken && !options.nonInteractive && options.readApiToken) {
+        this.log("The stored Cloudflare API Token is invalid; enter a replacement token");
+        token = await options.readApiToken();
+        try {
+          whoami = await this.readWhoami(this.toolkitRoot, false, {
+            CLOUDFLARE_API_TOKEN: token,
+            ...(candidateAccountId === undefined ? {} : { CLOUDFLARE_ACCOUNT_ID: candidateAccountId }),
+          });
+        } catch (retryError) {
+          throw new SiteError(
+            "AUTH_CLOUDFLARE_MISSING",
+            "Cloudflare API Token validation failed",
+            {},
+            { cause: retryError },
+          );
+        }
+      } else {
+        throw new SiteError("AUTH_CLOUDFLARE_MISSING", "Cloudflare API Token validation failed", {}, { cause: error });
+      }
     }
 
     const accounts = accountsFromWhoami(whoami);
@@ -516,7 +534,10 @@ export class SiteToolkitService {
     }
 
     if (storedToken !== token) {
-      await saveCloudflareToken(this.runner, account.id, token, workspace);
+      this.log(
+        "macOS Keychain will ask twice; paste the same Cloudflare API Token both times (not your Mac password)",
+      );
+      await saveCloudflareToken(this.runner, account.id, token, workspace, !options.nonInteractive);
       changed.push("keychain:CLOUDFLARE_API_TOKEN");
     }
 
