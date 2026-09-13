@@ -23,7 +23,7 @@ GitHub Organization：[`huzz-site`](https://github.com/huzz-site)
 
 ### G1：一次初始化
 
-`site init` 完成工作站检查、GitHub 登录、Cloudflare API Token 验证、默认 Account 选择，并把 Token 保存到 macOS Keychain。初始化必须可重复执行。
+`site init` 完成工作站检查、GitHub 登录、Cloudflare API Token 验证和默认 Account 选择。Token 由用户使用操作系统、密码管理器或 Shell 自行保存，CLI 只从环境变量读取。初始化必须可重复执行。
 
 GitHub 浏览器授权和 Cloudflare Token 创建仍需要用户本人确认；确认完成后 CLI 自动验证并继续。首版不再维护一套额外的 Wrangler OAuth 凭证。
 
@@ -235,13 +235,12 @@ site rollback                 回退到指定或上一个 Worker Version
 2. 验证当前目录是预期的 `huzz-site` 工作区。
 3. 运行 `gh auth status`；未登录时发起浏览器登录。
 4. 验证当前身份可以访问并创建 `huzz-site` 组织仓库。
-5. 隐藏读取 Cloudflare 的 `Edit Cloudflare Workers` API Token，并用 `wrangler whoami --json` 验证。
+5. 从 `CLOUDFLARE_API_TOKEN` 环境变量读取 Cloudflare 的 `Edit Cloudflare Workers` Token，并用 `wrangler whoami --json` 验证。
 6. 从 Token 可访问的 Accounts 中选择默认 Account；只有一个时自动选择，多个时由用户选择一次。
 7. 保存非敏感的默认 Account ID 和名称。
-8. macOS Keychain 安全提示出现后，将同一个 Cloudflare Token 输入两次；CLI 读回并校验一致后完成保存，不写明文配置文件。
-9. 验证完整配置并输出结果。
+8. 验证完整配置并输出结果；CLI 不持久化 Token。
 
-同一个受限 API Token 同时服务本地 Wrangler 和 CI。Token 通过隐藏输入读取，只写入 macOS Keychain，不进入项目文件、不打印。创建仓库时再从 Keychain 读取，并写入该仓库自己的 GitHub Actions Secret。
+同一个受限 API Token 可以同时服务本地 Wrangler 和 CI。用户负责在执行 CLI 前把 Token 注入 `CLOUDFLARE_API_TOKEN`；CLI 不把它写入项目文件或日志。创建仓库时，CLI 从当前环境读取 Token，并通过标准输入写入该仓库自己的 GitHub Actions Secret。
 
 不使用 Organization Secret：`huzz-site` 当前是 GitHub Free，组织级 Secret/Variable 无法被私有仓库使用。仓库级 Secret 可同时支持公开和私有站点，也不需要 `admin:org` 权限。
 
@@ -251,7 +250,6 @@ site init --non-interactive --json
 ```
 
 非交互模式遇到未完成的登录或缺失参数时直接失败，不等待输入。
-首次 Keychain 持久化必须在交互模式完成；这是为了避免把 Token 放进 `security` 命令参数或进程列表。
 
 ### 8.2 `site doctor`
 
@@ -260,7 +258,7 @@ site init --non-interactive --json
 - 固定 GitHub Organization 是否可访问。
 - GitHub 登录和 Cloudflare API Token 是否有效。
 - 默认 Cloudflare Account 是否可访问。
-- 本机 Keychain 中的 CI Token 是否存在。
+- 当前环境中是否存在 `CLOUDFLARE_API_TOKEN`。
 - Node.js、pnpm、Wrangler 和 CLI 版本是否兼容。
 - 工作区、目录和仓库是否冲突。
 
@@ -446,7 +444,7 @@ JSON 输出：
 
 ## 11. 安全与幂等性
 
-- Token 只通过隐藏 stdin、macOS Keychain 或仓库级 GitHub Secret 传递。
+- Token 只通过环境变量、标准输入或仓库级 GitHub Secret 传递；本地持久化由用户管理。
 - Token 不进入命令参数、Git、stdout、日志或部署记录。
 - GitHub Organization 固定为 `huzz-site`。
 - 每个站点的 `wrangler.jsonc` 固定 Account ID，部署前必须校验。
@@ -482,7 +480,7 @@ JSON 输出：
 
 以下条件全部满足才算 v1 完成：
 
-1. `site init` 能完成认证、默认账号和本机 Keychain Token 准备，并可重复执行。
+1. `site init` 能验证环境中的 Token、完成默认账号准备，并可重复执行。
 2. `site doctor --json` 能报告依赖、GitHub、Cloudflare 和工作区状态。
 3. 一条非交互 `site create` 能创建独立仓库并完成首次部署。
 4. 默认站点包含 Vue 3 + Vite、可选 Worker 后端、`/api/health` 和测试。
@@ -509,7 +507,7 @@ JSON 输出：
 - `init`、`create`、`deploy`、`status`。
 - 固定 GitHub Organization 和仓库创建。
 - GitHub Actions 中央复用工作流。
-- Cloudflare 认证、Account、Keychain 和仓库级 CI Secret 初始化。
+- Cloudflare Token 验证、Account 和仓库级 CI Secret 初始化。
 - `versions`、`rollback`。
 - 使用 `huzz.cn` 完成端到端验收。
 

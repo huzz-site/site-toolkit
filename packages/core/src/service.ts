@@ -18,7 +18,7 @@ import {
   writeWorkspaceConfig,
   type WorkspaceConfig,
 } from "./config.js";
-import { readCloudflareToken, saveCloudflareToken } from "./credentials.js";
+import { readCloudflareToken } from "./credentials.js";
 import { SiteError } from "./errors.js";
 import {
   ProcessRunner,
@@ -54,7 +54,6 @@ export interface InitOptions {
   readonly accountId?: string;
   readonly apiToken?: string;
   readonly chooseAccount?: (accounts: readonly Account[]) => Promise<Account>;
-  readonly readApiToken?: () => Promise<string>;
 }
 
 export interface CreateOptions {
@@ -207,7 +206,7 @@ export class SiteToolkitService {
   ): Promise<CommandResult> {
     const storedEnvironment = args.includes("--version")
       ? undefined
-      : await this.resolveCloudflareEnvironment(cwd);
+      : await this.resolveCloudflareEnvironment();
     const environment = { ...storedEnvironment, ...options.env };
     return this.runner.run("pnpm", ["exec", "wrangler", ...args], {
       cwd,
@@ -218,35 +217,14 @@ export class SiteToolkitService {
     });
   }
 
-  private async resolveCloudflareEnvironment(cwd: string): Promise<Readonly<Record<string, string>> | undefined> {
-    const directToken = process.env.CLOUDFLARE_API_TOKEN ?? process.env.SITE_CLOUDFLARE_API_TOKEN;
+  private async resolveCloudflareEnvironment(): Promise<Readonly<Record<string, string>> | undefined> {
+    const directToken = readCloudflareToken();
     const directAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
-    if (directToken) {
-      return {
-        CLOUDFLARE_API_TOKEN: directToken,
-        ...(directAccount === undefined ? {} : { CLOUDFLARE_ACCOUNT_ID: directAccount }),
-      };
-    }
-
-    let accountId: string | undefined;
-    try {
-      const siteRoot = await findSiteRoot(cwd);
-      accountId = (await loadWranglerConfig(siteRoot)).account_id;
-    } catch (error) {
-      if (!(error instanceof SiteError) || error.code !== "SITE_NOT_FOUND") throw error;
-    }
-    if (!accountId) {
-      try {
-        const workspace = await findWorkspaceRoot(cwd);
-        accountId = (await loadWorkspaceConfig(workspace)).cloudflare.accountId;
-      } catch (error) {
-        if (!(error instanceof SiteError) || error.code !== "WORKSPACE_NOT_INITIALIZED") throw error;
-      }
-    }
-    if (!accountId) return undefined;
-    const token = await readCloudflareToken(this.runner, accountId, cwd);
-    return token
-      ? { CLOUDFLARE_API_TOKEN: token, CLOUDFLARE_ACCOUNT_ID: accountId }
+    return directToken
+      ? {
+          CLOUDFLARE_API_TOKEN: directToken,
+          ...(directAccount === undefined ? {} : { CLOUDFLARE_ACCOUNT_ID: directAccount }),
+        }
       : undefined;
   }
 
@@ -394,12 +372,12 @@ export class SiteToolkitService {
         ...(whoami.loggedIn === true && accountVisible ? {} : { code: "CF_ACCOUNT_NOT_FOUND" }),
         detail: `${account.name} (${account.id})`,
       });
-      const ciToken = await readCloudflareToken(this.runner, account.id, this.toolkitRoot);
+      const ciToken = readCloudflareToken();
       checks.push({
-        name: "credential:cloudflare-ci-token",
+        name: "credential:cloudflare-api-token",
         ok: ciToken !== undefined,
         ...(ciToken === undefined ? { code: "CF_CI_SECRET_MISSING" } : {}),
-        detail: ciToken === undefined ? "not found in environment or macOS Keychain" : "available",
+        detail: ciToken === undefined ? "CLOUDFLARE_API_TOKEN is not set" : "available from environment",
       });
     } catch (error) {
       const siteError = error instanceof SiteError ? error : undefined;
@@ -460,16 +438,12 @@ export class SiteToolkitService {
       existing = await loadWorkspaceConfig(workspace);
     }
     const candidateAccountId = options.accountId ?? existing?.cloudflare.accountId;
-    const storedToken = candidateAccountId === undefined
-      ? undefined
-      : await readCloudflareToken(this.runner, candidateAccountId, workspace);
-    let token = options.apiToken
-      ?? process.env.SITE_CLOUDFLARE_API_TOKEN
-      ?? process.env.CLOUDFLARE_API_TOKEN
-      ?? storedToken
-      ?? (await options.readApiToken?.());
+    const token = options.apiToken ?? readCloudflareToken();
     if (!token) {
-      throw new SiteError("USER_INPUT_REQUIRED", "A Cloudflare API Token is required");
+      throw new SiteError(
+        "AUTH_CLOUDFLARE_MISSING",
+        "CLOUDFLARE_API_TOKEN is required; save it in your environment and run site init again",
+      );
     }
     let whoami: CloudflareWhoami;
     try {
@@ -478,25 +452,7 @@ export class SiteToolkitService {
         ...(candidateAccountId === undefined ? {} : { CLOUDFLARE_ACCOUNT_ID: candidateAccountId }),
       });
     } catch (error) {
-      if (token === storedToken && !options.nonInteractive && options.readApiToken) {
-        this.log("The stored Cloudflare API Token is invalid; enter a replacement token");
-        token = await options.readApiToken();
-        try {
-          whoami = await this.readWhoami(this.toolkitRoot, false, {
-            CLOUDFLARE_API_TOKEN: token,
-            ...(candidateAccountId === undefined ? {} : { CLOUDFLARE_ACCOUNT_ID: candidateAccountId }),
-          });
-        } catch (retryError) {
-          throw new SiteError(
-            "AUTH_CLOUDFLARE_MISSING",
-            "Cloudflare API Token validation failed",
-            {},
-            { cause: retryError },
-          );
-        }
-      } else {
-        throw new SiteError("AUTH_CLOUDFLARE_MISSING", "Cloudflare API Token validation failed", {}, { cause: error });
-      }
+      throw new SiteError("AUTH_CLOUDFLARE_MISSING", "Cloudflare API Token validation failed", {}, { cause: error });
     }
 
     const accounts = accountsFromWhoami(whoami);
@@ -531,14 +487,6 @@ export class SiteToolkitService {
     if (JSON.stringify(existing) !== JSON.stringify(config)) {
       await writeWorkspaceConfig(workspace, config);
       changed.push(WORKSPACE_CONFIG_FILE);
-    }
-
-    if (storedToken !== token) {
-      this.log(
-        "macOS Keychain will ask twice; paste the same Cloudflare API Token both times (not your Mac password)",
-      );
-      await saveCloudflareToken(this.runner, account.id, token, workspace, !options.nonInteractive);
-      changed.push("keychain:CLOUDFLARE_API_TOKEN");
     }
 
     return { workspace, account, changed };
@@ -911,15 +859,11 @@ export class SiteToolkitService {
       }
     }
 
-    const cloudflareToken = await readCloudflareToken(
-      this.runner,
-      workspaceConfig.cloudflare.accountId,
-      workspace,
-    );
+    const cloudflareToken = readCloudflareToken();
     if (!cloudflareToken) {
       throw new SiteError(
         "CF_CI_SECRET_MISSING",
-        "Cloudflare CI token is unavailable; run site init or set SITE_CLOUDFLARE_API_TOKEN",
+        "Cloudflare CI token is unavailable; set CLOUDFLARE_API_TOKEN in the environment",
       );
     }
     await this.runner.run(

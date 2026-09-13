@@ -12,7 +12,7 @@ import {
 } from "@huzz-site/site-core";
 import { Command, InvalidArgumentError, Option } from "commander";
 
-import { chooseAccount, readSecret } from "./prompts.js";
+import { chooseAccount } from "./prompts.js";
 
 interface GlobalOptions {
   readonly json: boolean;
@@ -72,17 +72,7 @@ program
       workspace: resolve(options.workspace ?? globals.cwd),
       nonInteractive: globals.nonInteractive,
       ...(options.accountId === undefined ? {} : { accountId: options.accountId }),
-      ...(globals.nonInteractive
-        ? {}
-        : {
-            chooseAccount,
-            readApiToken: async () => {
-              process.stderr.write(
-                "[site] Create an 'Edit Cloudflare Workers' token at https://dash.cloudflare.com/profile/api-tokens\n",
-              );
-              return readSecret("Cloudflare API Token: ");
-            },
-          }),
+      ...(globals.nonInteractive ? {} : { chooseAccount }),
     });
     printResult("init", result);
   });

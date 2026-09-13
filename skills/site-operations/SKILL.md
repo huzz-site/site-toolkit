@@ -34,5 +34,5 @@ For `create`, require the repository, display name, primary domain, backend choi
 - Do not call `gh`, `wrangler`, Cloudflare APIs, or GitHub APIs to perform a write that the CLI owns.
 - Do not deploy or roll back unless the user explicitly requested that mutation. Creating a site includes its first deployment.
 - Do not expose destructive deletion or account-switching workflows.
-- On authentication, permission, credential, or `USER_INPUT_REQUIRED` errors, stop and ask the user to run interactive `site init`; do not work around the CLI.
+- On authentication or credential errors, stop and ask the user to load `CLOUDFLARE_API_TOKEN` in their environment and run `site init`; never request the Token in chat or persist it yourself.
 - Return the CLI's repository, Worker version, deployment, URL, and health-check result without inventing missing values.

@@ -15,12 +15,27 @@ pnpm site --help
 初始化本地工作区：
 
 ```bash
+# 先用你选择的凭证工具把 Token 加载到 CLOUDFLARE_API_TOKEN
 pnpm site --cwd .. init
+```
+
+CLI 不规定凭证的持久化方式。当前终端中临时、安全地载入 Token 的示例：
+
+```zsh
+read -s "CLOUDFLARE_API_TOKEN?Cloudflare API Token: "
+export CLOUDFLARE_API_TOKEN
+echo
+```
+
+```powershell
+$secret = Read-Host "Cloudflare API Token" -AsSecureString
+$env:CLOUDFLARE_API_TOKEN = [System.Net.NetworkCredential]::new("", $secret).Password
 ```
 
 ## 安全边界
 
 - GitHub Organization 固定为 `huzz-site`。
-- Token 不进入仓库或命令参数；本地保存在 macOS Keychain，CI 使用仓库级 GitHub Secret。
+- CLI 不持久化 Token；本地凭证由用户管理，并通过 `CLOUDFLARE_API_TOKEN` 环境变量注入。
+- 创建站点时，Token 通过标准输入写入该站点的仓库级 GitHub Secret，不进入仓库、命令参数或日志。
 - Cloudflare 操作使用项目锁定版本的 Wrangler。
 - AI 只调用 `site --non-interactive --json`，不直接执行外部写操作。
