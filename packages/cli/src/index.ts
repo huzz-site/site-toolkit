@@ -139,7 +139,7 @@ function printCredentialGuidance(details: Readonly<Record<string, unknown>>): bo
 program
   .name("site")
   .description("Create, deploy, inspect, and roll back huzz-site websites")
-  .version("1.1.0")
+  .version("1.1.1")
   .option("--json", "write a versioned JSON result to stdout", false)
   .option("--non-interactive", "never prompt for user input", false)
   .option("--cwd <directory>", "working directory", process.cwd())

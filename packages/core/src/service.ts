@@ -138,6 +138,20 @@ function elapsed(start: number): number {
   return Math.round(performance.now() - start);
 }
 
+function causeDetails(error: unknown): Readonly<Record<string, unknown>> {
+  if (error instanceof SiteError) {
+    return {
+      cause: {
+        code: error.code,
+        message: error.message,
+        details: error.details,
+      },
+    };
+  }
+  if (error instanceof Error) return { cause: { message: error.message } };
+  return { cause: { message: String(error) } };
+}
+
 function accountFromUnknown(value: unknown): Account | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const record = value as Record<string, unknown>;
@@ -684,7 +698,7 @@ export class SiteToolkitService {
     try {
       await this.runWrangler(["deploy"], root);
     } catch (error) {
-      throw new SiteError("DEPLOY_FAILED", "Cloudflare deployment failed", {}, { cause: error });
+      throw new SiteError("DEPLOY_FAILED", "Cloudflare deployment failed", causeDetails(error), { cause: error });
     }
     const site = await loadSiteConfig(root);
     const wrangler = await loadWranglerConfig(root);
@@ -756,7 +770,7 @@ export class SiteToolkitService {
     try {
       await this.runWrangler(args, root);
     } catch (error) {
-      throw new SiteError("ROLLBACK_FAILED", "Cloudflare rollback failed", {}, { cause: error });
+      throw new SiteError("ROLLBACK_FAILED", "Cloudflare rollback failed", causeDetails(error), { cause: error });
     }
     const after = await this.cloudflareStatus(root);
     const urls = await this.deploymentUrls(site, wrangler);

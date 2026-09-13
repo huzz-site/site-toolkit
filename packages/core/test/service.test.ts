@@ -384,6 +384,9 @@ describe("SiteToolkitService failure boundaries", () => {
     const root = await target();
     await renderSite(root);
     const runner = new FakeRunner((command, args, options) => {
+      if (command === "git" && args[0] === "status") {
+        return result(command, args, options.cwd, "");
+      }
       if (command === "pnpm" && args.slice(-1)[0] === "deploy" && !args.includes("--dry-run")) {
         throw new SiteError("COMMAND_FAILED", "upload broke");
       }
@@ -391,7 +394,12 @@ describe("SiteToolkitService failure boundaries", () => {
     });
     await expect(
       toolkit({ cwd: root, toolkitRoot: root, runner }).deploy(),
-    ).rejects.toMatchObject<Partial<SiteError>>({ code: "DEPLOY_FAILED" });
+    ).rejects.toMatchObject<Partial<SiteError>>({
+      code: "DEPLOY_FAILED",
+      details: {
+        cause: expect.objectContaining({ code: "COMMAND_FAILED", message: "upload broke" }),
+      },
+    });
   });
 
   it("classifies rollback failures as ROLLBACK_FAILED", async () => {
