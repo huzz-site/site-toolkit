@@ -109,6 +109,15 @@ interface WorkflowRun {
   readonly headSha?: string;
 }
 
+interface WorkerDeployment {
+  readonly versions?: readonly { readonly version_id?: string; readonly percentage?: number }[];
+}
+
+interface WorkerVersion {
+  readonly id?: string;
+  readonly [key: string]: unknown;
+}
+
 interface GitHubOrganizationPolicy {
   readonly members_can_create_repositories?: boolean;
   readonly members_can_create_public_repositories?: boolean;
@@ -631,9 +640,12 @@ export class SiteToolkitService {
       this.runWrangler(["deployments", "status", "--json"], root),
       this.runWrangler(["versions", "list", "--json"], root),
     ]);
-    const deployment = parseJsonOutput<unknown>(deploymentResult, "wrangler deployments status");
-    const versions = parseJsonOutput<unknown>(versionsResult, "wrangler versions list");
-    const version = Array.isArray(versions) ? versions[0] ?? null : versions;
+    const deployment = parseJsonOutput<WorkerDeployment>(deploymentResult, "wrangler deployments status");
+    const versions = parseJsonOutput<readonly WorkerVersion[] | WorkerVersion>(versionsResult, "wrangler versions list");
+    const deployedVersionId = deployment.versions?.find((candidate) => (candidate.percentage ?? 0) > 0)?.version_id;
+    const version = Array.isArray(versions)
+      ? versions.find((candidate) => candidate.id === deployedVersionId) ?? versions.at(-1) ?? null
+      : versions;
     return { deployment, version };
   }
 

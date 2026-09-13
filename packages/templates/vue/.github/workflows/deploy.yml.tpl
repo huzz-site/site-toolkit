@@ -14,6 +14,6 @@ concurrency:
 
 jobs:
   deploy:
-    uses: huzz-site/site-toolkit/.github/workflows/deploy.yml@v1.1.1
+    uses: huzz-site/site-toolkit/.github/workflows/deploy.yml@v1.1.2
     secrets:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

@@ -25,7 +25,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: huzz-site/site-toolkit
-          ref: v1.1.1
+          ref: v1.1.2
           path: toolkit
 
       - name: Set up Node.js

@@ -346,7 +346,12 @@ describe("SiteToolkitService failure boundaries", () => {
     });
     vi.stubEnv("CLOUDFLARE_API_TOKEN", "test-token");
     const runner = new FakeRunner((command, args, options) => {
-      const stdout = args.includes("versions") ? "[]" : "{}";
+      let stdout = "{}";
+      if (args.includes("deployments")) {
+        stdout = '{"versions":[{"version_id":"current-version","percentage":100}]}';
+      } else if (args.includes("versions")) {
+        stdout = '[{"id":"old-version","number":1},{"id":"current-version","number":2}]';
+      }
       return result(command, args, options.cwd, stdout);
     });
     const fetcher = vi.fn<typeof globalThis.fetch>(async () => new Response(
@@ -360,6 +365,7 @@ describe("SiteToolkitService failure boundaries", () => {
       "https://demo.huzz.workers.dev",
       "https://demo.huzz.workers.dev/api/health",
     ]);
+    expect(status.version).toMatchObject({ id: "current-version", number: 2 });
     expect(fetcher).toHaveBeenCalledWith(
       `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/workers/subdomain`,
       expect.objectContaining({ headers: { Authorization: "Bearer test-token" } }),
